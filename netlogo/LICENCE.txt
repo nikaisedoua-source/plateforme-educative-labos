@@ -1,0 +1,3 @@
+NetLogo Web (GPL-2.0) : https://github.com/NetLogo/Galapagos — page exportable de netlogoweb.org, version b307ada7
+Modèles : bibliothèque NetLogo (Uri Wilensky, Northwestern University), CC BY-NC-SA 3.0 — https://github.com/NetLogo/models (1f05439)
+Licence des modèles : https://creativecommons.org/licenses/by-nc-sa/3.0/deed.fr
