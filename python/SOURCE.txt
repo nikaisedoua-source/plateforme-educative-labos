@@ -1,0 +1,1 @@
+https://github.com/jupyterlite/jupyterlite (jupyterlite-core 0.8.6, noyau Pyodide 0.8.6)
