@@ -1,0 +1,1572 @@
+/**
+ * @file This contains the utilities for generating the Abstract Syntax Tree for JavaScript based
+ * Music Blocks code.
+ * @author Anindya Kundu
+ *
+ * @copyright 2020 Anindya Kundu
+ *
+ * @license
+ * This program is free software; you can redistribute it and/or modify it under the terms of the
+ * The GNU Affero General Public License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ * You should have received a copy of the GNU Affero General Public License along with this
+ * library; if not, write to the Free Software Foundation, 51 Franklin Street, Suite 500 Boston,
+ * MA 02110-1335 USA.
+ *
+ * The Abstract Syntax Trees are in ESTree specification.
+ *
+ * Private members' names begin with underscore '_".
+ */
+
+/* global JSInterface, last, deepClone */
+
+/* exported ASTUtils */
+
+/**
+ * @class
+ * @classdesc contains the barebone ASTs and utilities for generating the Abstract Syntax Tree for
+ * JavaScript based Music Blocks code.
+ */
+class ASTUtils {
+    static _isValidIdentifier(name) {
+        return typeof name === "string" && /^[A-Za-z_$][0-9A-Za-z_$]*$/.test(name);
+    }
+
+    /**
+     * Returns a valid JavaScript identifier for an action name.
+     *
+     * Action names are free text ("chorus 2", "1st verse"), but an action is exported as a
+     * `let` binding that its calls refer to, so the name has to be an identifier and there is
+     * no string form to fall back to the way boxes fall back to setBox. Characters that can't
+     * appear in an identifier become "_", and names that would still not parse, or would
+     * shadow what the generated code itself uses (mouse, actionArgs, Math, ...), get a leading
+     * "_". Letters outside ASCII are kept, so non-English action names read the same.
+     *
+     * @static
+     * @param {String} name - action name
+     * @returns {String} identifier
+     */
+    static _getActionIdentifier(name) {
+        return ASTUtils._actionIdentifiers.get(name) ?? ASTUtils._toIdentifier(name);
+    }
+
+    /**
+     * Converts free text to an identifier, without regard to what else is in the program.
+     *
+     * @static
+     * @param {String} name - action name
+     * @returns {String} identifier
+     */
+    static _toIdentifier(name) {
+        // U+200C and U+200D are allowed after the first character (ECMAScript IdentifierPart).
+        let id = String(name).replace(/[^\p{ID_Continue}$\u200C\u200D]/gu, "_");
+        if (!/^[\p{ID_Start}_$]/u.test(id) || ASTUtils._RESERVED_NAMES.has(id)) {
+            id = "_" + id;
+        }
+        return id;
+    }
+
+    /**
+     * Assigns every action in the program its identifier up front, so two names that convert
+     * to the same identifier ("chorus-2" and "chorus_2") don't produce two `let chorus_2`.
+     * Names that are already identifiers keep them; a converted name that is taken gets a
+     * numeric suffix. Definitions and calls both read this map, so they always agree.
+     *
+     * Converted names also avoid the program's box variables: a box whose name is an identifier
+     * is exported as a `var` in its flow, which would shadow an action of the same name there.
+     *
+     * @static
+     * @param {String[]} names - every action name in the program
+     * @param {String[]} [boxNames] - every box the program stores into, see getBoxNames
+     * @returns {void}
+     */
+    static setActionNames(names, boxNames = []) {
+        const identifiers = new Map();
+        const taken = new Set(boxNames.filter(ASTUtils._isValidIdentifier));
+        for (const name of names) {
+            const id = ASTUtils._toIdentifier(name);
+            if (id === name && !taken.has(id)) {
+                identifiers.set(name, id);
+                taken.add(id);
+            }
+        }
+        for (const name of names) {
+            if (identifiers.has(name)) continue;
+            const base = ASTUtils._toIdentifier(name);
+            let id = base;
+            for (let n = 2; taken.has(id); n++) id = `${base}_${n}`;
+            identifiers.set(name, id);
+            taken.add(id);
+        }
+        ASTUtils._actionIdentifiers = identifiers;
+    }
+
+    /**
+     * Returns the name of every box the given stack trees store into.
+     *
+     * @static
+     * @param {Object[]} trees - stack trees, as built by JSGenerate
+     * @returns {String[]} box names
+     */
+    static getBoxNames(trees) {
+        const names = [];
+        const walk = node => {
+            if (!Array.isArray(node)) return;
+            if (typeof node[0] === "string") {
+                if (node[0].startsWith("storein2_")) {
+                    names.push(node[0].slice("storein2_".length));
+                } else if (
+                    node[0] === "storein" &&
+                    Array.isArray(node[1]) &&
+                    typeof node[1][0] === "string"
+                ) {
+                    names.push(node[1][0]);
+                }
+            }
+            node.forEach(walk);
+        };
+        trees.forEach(walk);
+        return names;
+    }
+
+    /** Action name → identifier for the program being generated; see setActionNames. */
+    static _actionIdentifiers = new Map();
+
+    /** Names of the actions that end with a Stop block in their own stack; see setStoppingActions. */
+    static _stoppingActions = new Set();
+
+    /** How many loops (Repeat, Forever, While, Until) the code being generated is inside. */
+    static _loopDepth = 0;
+
+    /**
+     * Runs a generator with the loop depth raised by one, so action calls made inside it know
+     * they are called from a loop.
+     *
+     * @static
+     * @param {Function} generate - builds the AST of a loop
+     * @returns {Object} what generate returns
+     */
+    static _inLoop(generate) {
+        ASTUtils._loopDepth++;
+        try {
+            return generate();
+        } finally {
+            ASTUtils._loopDepth--;
+        }
+    }
+
+    /**
+     * Records which actions have a Stop block directly in their own stack (not inside a
+     * loop or other clamp). In Music Blocks such a Stop also ends the loop the action was
+     * called from (Logo.doBreak), so these actions report it to their callers: the action
+     * returns STOPFLOW instead of ENDFLOW and each call checks for it.
+     *
+     * @static
+     * @param {String[]} names - every action name in the program
+     * @param {Object[]} trees - the stack tree of each action, in the order of names
+     * @returns {void}
+     */
+    static setStoppingActions(names, trees) {
+        ASTUtils._stoppingActions = new Set(
+            names.filter(
+                (name, i) =>
+                    Array.isArray(trees[i]) &&
+                    trees[i].some(flow => Array.isArray(flow) && flow[0] === "break")
+            )
+        );
+    }
+
+    /**
+     * Returns the names of every identifier used in the given ASTs.
+     *
+     * @static
+     * @param {...Object} ASTs - Abstract Syntax Trees to search
+     * @returns {Set<String>} identifier names
+     */
+    static _getIdentifierNames(...ASTs) {
+        const names = new Set();
+        const visit = node => {
+            if (Array.isArray(node)) {
+                node.forEach(visit);
+            } else if (node !== null && typeof node === "object") {
+                if (node.type === "Identifier") names.add(node.name);
+                Object.values(node).forEach(visit);
+            }
+        };
+        ASTs.forEach(visit);
+        return names;
+    }
+
+    static _getMouseCallExpression(methodName, args) {
+        return {
+            type: "CallExpression",
+            callee: {
+                type: "MemberExpression",
+                object: {
+                    type: "Identifier",
+                    name: "mouse"
+                },
+                computed: false,
+                property: {
+                    type: "Identifier",
+                    name: methodName
+                }
+            },
+            arguments: args
+        };
+    }
+
+    /**
+     * Names an exported action can't take: reserved words, plus the names the generated code
+     * relies on (a top-level `let Math` would break every Math.floor in the program).
+     */
+    static _RESERVED_NAMES = new Set(
+        `await break case catch class const continue debugger default delete do else enum export
+        extends false finally for function if implements import in instanceof interface let new
+        null package private protected public return static super switch this throw true try
+        typeof var void while with yield arguments eval undefined NaN Infinity
+        mouse actionArgs Mouse MusicBlocks Math MathUtility`.split(/\s+/)
+    );
+
+    /**
+     * @static
+     * Abstract Syntax Tree for the bare minimum program code
+     */
+    static _bareboneAST = {
+        type: "Program",
+        sourceType: "script",
+        body: [
+            {
+                type: "ExpressionStatement",
+                expression: {
+                    type: "CallExpression",
+                    callee: {
+                        type: "MemberExpression",
+                        object: {
+                            type: "Identifier",
+                            name: "MusicBlocks"
+                        },
+                        computed: false,
+                        property: {
+                            type: "Identifier",
+                            name: "run"
+                        }
+                    },
+                    arguments: []
+                }
+            }
+        ]
+    };
+
+    /**
+     * @static
+     * Abstract Syntax Tree for the bare minimum mouse code
+     */
+    static _mouseAST = {
+        type: "ExpressionStatement",
+        expression: {
+            type: "NewExpression",
+            callee: {
+                type: "Identifier",
+                name: "Mouse"
+            },
+            arguments: [
+                {
+                    type: "ArrowFunctionExpression",
+                    params: [
+                        {
+                            type: "Identifier",
+                            name: "mouse"
+                        }
+                    ],
+                    body: {
+                        type: "BlockStatement",
+                        body: [
+                            {
+                                type: "ReturnStatement",
+                                argument: {
+                                    type: "MemberExpression",
+                                    object: {
+                                        type: "Identifier",
+                                        name: "mouse"
+                                    },
+                                    computed: false,
+                                    property: {
+                                        type: "Identifier",
+                                        name: "ENDMOUSE"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    async: true,
+                    expression: false
+                }
+            ]
+        }
+    };
+
+    /**
+     * @static
+     * @returns {Object} barebone Abstract Syntax Tree for JavaScript based Music Blocks programs
+     */
+    static get BAREBONE_AST() {
+        return deepClone(ASTUtils._bareboneAST);
+    }
+
+    /**
+     * Returns the Abstract Syntax tree for a setter statement.
+     *
+     * @static
+     * @param {String} identifier - identifier name
+     * @param {[*]} - tree of arguments
+     * @returns {Object} Abstract Syntax Tree of getter
+     */
+    static _getSetAST(identifier, args) {
+        return {
+            type: "ExpressionStatement",
+            expression: {
+                type: "AssignmentExpression",
+                left: {
+                    type: "MemberExpression",
+                    object: {
+                        type: "Identifier",
+                        name: "mouse"
+                    },
+                    computed: false,
+                    property: {
+                        type: "Identifier",
+                        name: `${identifier}`
+                    }
+                },
+                operator: "=",
+                right: ASTUtils._getArgsAST(args)[0]
+            }
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax tree for a getter statement.
+     *
+     * @static
+     * @param {String} identifier - identifier name
+     * @returns {Object} Abstract Syntax Tree of getter
+     */
+    static _getGetAST(identifier) {
+        return {
+            type: "MemberExpression",
+            object: {
+                type: "Identifier",
+                name: "mouse"
+            },
+            computed: false,
+            property: {
+                type: "Identifier",
+                name: `${identifier}`
+            }
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax tree for an if/if-else block.
+     *
+     * @static
+     * @param {[*]} args - tree of arguments (for test argument)
+     * @param {[*]} ifFlow - tree of flow statements for if condition
+     * @param {[*]} [elseFlow] - tree of flow statements for else condition
+     * @param {Number} iteratorNum - iterator index number
+     * @returns {Object} Abstract Syntax Tree of if/if-else block
+     */
+    static _getIfAST(args, ifFlow, elseFlow, iteratorNum) {
+        const AST = {
+            type: "IfStatement",
+            test: ASTUtils._getArgsAST(args)[0],
+            consequent: {
+                type: "BlockStatement",
+                body: ASTUtils._getBlockAST(ifFlow, iteratorNum)
+            },
+            alternate: null
+        };
+
+        if (elseFlow !== undefined) {
+            AST["alternate"] = {
+                type: "BlockStatement",
+                body: ASTUtils._getBlockAST(elseFlow, iteratorNum)
+            };
+        }
+
+        return AST;
+    }
+
+    /**
+     * Returns the Abstract Syntax tree for a for-loop block.
+     *
+     * @static
+     * @param {[*]} args - tree of arguments (for repeat limit)
+     * @param {[*]} flow - tree of flow statements
+     * @param {Number} iteratorNum - iterator index number
+     * @returns {Object} Abstract Syntax Tree of for-loop
+     */
+    static _getForLoopAST(args, flow, iteratorNum) {
+        if (iteratorNum === undefined) iteratorNum = 0;
+
+        const declarations = [
+            {
+                type: "VariableDeclarator",
+                id: {
+                    type: "Identifier",
+                    name: "i" + iteratorNum
+                },
+                init: {
+                    type: "Literal",
+                    value: 0
+                }
+            }
+        ];
+
+        // Repeat works out its count once, as MathUtility.doRepeatCount(n),
+        // but `i < n` re-evaluates n every pass and runs Math.ceil(n) times.
+        // Only a non-negative integer literal can stay as it is (a negative
+        // one prints as a unary minus, which doesn't convert back to Repeat).
+        const body = ASTUtils._getBlockAST(flow, iteratorNum + 1);
+        let limit = ASTUtils._getArgsAST(args)[0];
+        if (!(limit.type === "Literal" && Number.isInteger(limit.value) && limit.value >= 0)) {
+            // A box can have any valid name, so pick one the count and the
+            // body don't use; otherwise the limit would shadow that box.
+            const used = ASTUtils._getIdentifierNames(limit, body);
+            let limitName = "limit" + iteratorNum;
+            while (used.has(limitName)) limitName = "_" + limitName;
+
+            declarations.push({
+                type: "VariableDeclarator",
+                id: {
+                    type: "Identifier",
+                    name: limitName
+                },
+                init: {
+                    type: "CallExpression",
+                    callee: {
+                        type: "Identifier",
+                        name: "MathUtility.doRepeatCount"
+                    },
+                    arguments: [limit]
+                }
+            });
+            limit = {
+                type: "Identifier",
+                name: limitName
+            };
+        }
+
+        return {
+            type: "ForStatement",
+            init: {
+                type: "VariableDeclaration",
+                kind: "let",
+                declarations
+            },
+            test: {
+                type: "BinaryExpression",
+                left: {
+                    type: "Identifier",
+                    name: "i" + iteratorNum
+                },
+                right: limit,
+                operator: "<"
+            },
+            update: {
+                type: "UpdateExpression",
+                argument: {
+                    type: "Identifier",
+                    name: "i" + iteratorNum
+                },
+                operator: "++",
+                prefix: false
+            },
+            body: {
+                type: "BlockStatement",
+                body
+            }
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax tree for a while-loop block.
+     *
+     * @static
+     * @param {[*]} args - tree of arguments (for test condition)
+     * @param {[*]} flow - tree of flow statements
+     * @param {Number} iteratorNum - iterator index number
+     * @returns {Object} Abstract Syntax Tree of while-loop
+     */
+    static _getWhileLoopAST(args, flow, iteratorNum) {
+        return {
+            type: "WhileStatement",
+            test: ASTUtils._getArgsAST(args)[0],
+            body: {
+                type: "BlockStatement",
+                body: ASTUtils._getBlockAST(flow, iteratorNum)
+            }
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax tree for a do-while-loop block.
+     *
+     * @static
+     * @param {[*]} args - tree of arguments (for test condition)
+     * @param {[*]} flow - tree of flow statements
+     * @param {Number} iteratorNum - iterator index number
+     * @returns {Object} Abstract Syntax Tree of do-while-loop
+     */
+    static _getDoWhileLoopAST(args, flow, iteratorNum) {
+        // The `until` block repeats while its condition is FALSE, so it maps to
+        // `do { ... } while (!condition)`. Emit the negated condition, collapsing
+        // an existing `!x` back to `x` to avoid a double negation.
+        const condition = ASTUtils._getArgsAST(args)[0];
+        const test =
+            condition && condition.type === "UnaryExpression" && condition.operator === "!"
+                ? condition.argument
+                : {
+                      type: "UnaryExpression",
+                      operator: "!",
+                      prefix: true,
+                      argument: condition
+                  };
+        return {
+            type: "DoWhileStatement",
+            body: {
+                type: "BlockStatement",
+                body: ASTUtils._getBlockAST(flow, iteratorNum)
+            },
+            test
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax Tree for an increment assignment statement.
+     *
+     * @static
+     * @param {[*]} args - list of identifier and tree of arguments
+     * @param {Boolean} isIncrement - whether increment statement
+     * @returns {Object} Abstract Syntax Tree of increment assignment statement
+     */
+    static _getIncrementStmntAST(args, isIncrement) {
+        const identifier =
+            typeof args[0] === "string" && args[0].startsWith("box_") ? args[0].slice(4) : args[0];
+        const arg = ASTUtils._getArgsAST([args[1]])[0];
+
+        if (!ASTUtils._isValidIdentifier(identifier)) {
+            const deltaAst = isIncrement
+                ? arg
+                : {
+                      type: "UnaryExpression",
+                      operator: "-",
+                      argument: arg,
+                      prefix: true
+                  };
+            return {
+                type: "ExpressionStatement",
+                expression: {
+                    type: "AwaitExpression",
+                    argument: ASTUtils._getMouseCallExpression("incrementBox", [
+                        {
+                            type: "Literal",
+                            value: identifier
+                        },
+                        deltaAst
+                    ])
+                }
+            };
+        }
+
+        return {
+            type: "ExpressionStatement",
+            expression: {
+                type: "AssignmentExpression",
+                left: {
+                    type: "Identifier",
+                    name: identifier
+                },
+                operator: "=",
+                right: {
+                    type: "BinaryExpression",
+                    left: {
+                        type: "Identifier",
+                        name: identifier
+                    },
+                    right: arg,
+                    operator: isIncrement ? "+" : "-"
+                }
+            }
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax Tree for the bare minimum method definition code
+     *
+     * @static
+     * @param {String} methodName - method name
+     * @returns {Object} Abstract Syntax Tree for method definition
+     */
+    static _getMethodDefAST(methodName) {
+        return {
+            type: "VariableDeclaration",
+            kind: "let",
+            declarations: [
+                {
+                    type: "VariableDeclarator",
+                    id: {
+                        type: "Identifier",
+                        name: ASTUtils._getActionIdentifier(methodName)
+                    },
+                    init: {
+                        type: "ArrowFunctionExpression",
+                        params: [
+                            {
+                                type: "Identifier",
+                                name: "mouse"
+                            },
+                            {
+                                type: "AssignmentPattern",
+                                left: {
+                                    type: "Identifier",
+                                    name: "actionArgs"
+                                },
+                                right: {
+                                    type: "ArrayExpression",
+                                    elements: [
+                                        {
+                                            type: "Literal",
+                                            value: null
+                                        }
+                                    ]
+                                }
+                            }
+                        ],
+                        body: {
+                            type: "BlockStatement",
+                            body: [
+                                {
+                                    type: "ReturnStatement",
+                                    argument: {
+                                        type: "MemberExpression",
+                                        object: {
+                                            type: "Identifier",
+                                            name: "mouse"
+                                        },
+                                        computed: false,
+                                        property: {
+                                            type: "Identifier",
+                                            name: "ENDFLOW"
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        async: true,
+                        expression: false
+                    }
+                }
+            ]
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax Tree for a method call without function argument.
+     *
+     * @static
+     * @param {String} methodName - method name
+     * @param {[*]} args - tree of arguments
+     * @param {Object} props - properties: { action: whether method call is an action call, statement: whether method call is expression statement }
+     * @returns {Object} - Abstract Syntax Tree of method call
+     */
+    static _getMethodCallAST(methodName, args, props) {
+        let AST = {
+            type: "ExpressionStatement",
+            expression: {
+                type: "AwaitExpression",
+                argument: {
+                    type: "CallExpression",
+                    callee: {
+                        type: "MemberExpression",
+                        object: {
+                            type: "Identifier",
+                            name: "mouse"
+                        },
+                        computed: false,
+                        property: {
+                            type: "Identifier",
+                            name: `${JSInterface.getMethodName(methodName)}`
+                        }
+                    },
+                    arguments: ASTUtils._getArgsAST(
+                        JSInterface.rearrangeMethodArgs(methodName, args)
+                    )
+                }
+            }
+        };
+
+        if (props) {
+            if (props.action) {
+                AST["expression"]["argument"]["callee"] = {
+                    type: "Identifier",
+                    name: ASTUtils._getActionIdentifier(methodName)
+                };
+                AST["expression"]["argument"]["arguments"] = [
+                    {
+                        type: "Identifier",
+                        name: "mouse"
+                    }
+                ];
+                if (args !== undefined && args !== null) {
+                    AST["expression"]["argument"]["arguments"].push({
+                        type: "ArrayExpression",
+                        elements: [
+                            {
+                                type: "Literal",
+                                value: null
+                            },
+                            ...ASTUtils._getArgsAST(args)
+                        ]
+                    });
+                }
+            }
+            if (props.statement === false) {
+                AST = AST["expression"];
+            }
+        }
+
+        return AST;
+    }
+
+    /**
+     * Returns the Abstract Syntax Tree for an action call. When the action ends with a Stop
+     * block, the call also checks whether the action reported it, and then stops as a Stop
+     * block at the call would: `if ((await action(mouse)) === "STOPFLOW") { Stop }`.
+     *
+     * @static
+     * @param {String} methodName - action name
+     * @param {[*]} args - tree of arguments
+     * @returns {Object} Abstract Syntax Tree of the call
+     */
+    static _getActionCallAST(methodName, args) {
+        const call = ASTUtils._getMethodCallAST(methodName, args, { action: true });
+        if (!ASTUtils._stoppingActions.has(methodName)) return call;
+
+        if (ASTUtils._loopDepth > 0) {
+            // Tell the action it is called from a loop: its Stop then ends that loop, and
+            // the rest of the action still runs (see _resolveStopBlocks).
+            const callArgs = call.expression.argument.arguments;
+            if (callArgs.length < 2) {
+                callArgs.push({
+                    type: "ArrayExpression",
+                    elements: [{ type: "Literal", value: null }]
+                });
+            }
+            callArgs.push({ type: "Literal", value: true });
+        }
+
+        return {
+            type: "IfStatement",
+            test: {
+                type: "BinaryExpression",
+                operator: "===",
+                left: call.expression,
+                right: { type: "Literal", value: "STOPFLOW" }
+            },
+            consequent: {
+                type: "BlockStatement",
+                body: [{ type: "BreakStatement", label: null, stopBlock: true }]
+            },
+            alternate: null
+        };
+    }
+
+    /**
+     * Returns the Abstract Syntax Tree for a method call in arguments.
+     *
+     * @static
+     * @param {String} methodName - method name
+     * @param {[*]} args - tree of arguments
+     * @returns {Object} - Abstract Syntax Tree of method call
+     */
+    static _getArgExpAST(methodName, args) {
+        if (methodName === "arg") {
+            const indexAst = ASTUtils._getArgsAST(args)[0] || {
+                type: "Literal",
+                value: 1
+            };
+            return {
+                type: "MemberExpression",
+                object: {
+                    type: "Identifier",
+                    name: "actionArgs"
+                },
+                property: indexAst,
+                computed: true
+            };
+        }
+
+        if (methodName === "box") {
+            const nameAst = ASTUtils._getArgsAST(args)[0];
+            if (nameAst && nameAst.type === "Identifier") {
+                return nameAst;
+            }
+            if (nameAst && nameAst.type === "Literal" && typeof nameAst.value === "string") {
+                if (ASTUtils._isValidIdentifier(nameAst.value)) {
+                    return {
+                        type: "Identifier",
+                        name: nameAst.value
+                    };
+                }
+            }
+            if (!nameAst) {
+                return {
+                    type: "Identifier",
+                    name: "undefined"
+                };
+            }
+            return ASTUtils._getMouseCallExpression("getBox", [nameAst]);
+        }
+
+        const mathOps = {
+            plus: ["binexp", "+"],
+            minus: ["binexp", "-"],
+            multiply: ["binexp", "*"],
+            divide: ["binexp", "/"],
+            mod: ["binexp", "%"],
+            equal: ["binexp", "==="],
+            less: ["binexp", "<"],
+            greater: ["binexp", ">"],
+            or: ["binexp", "||"],
+            and: ["binexp", "&&"],
+            xor: ["method", "MathUtility.doXor"],
+            not: ["unexp", "!"],
+            neg: ["unexp", "-"],
+            abs: ["method", "Math.abs"],
+            sqrt: ["method", "Math.sqrt"],
+            power: ["method", "Math.pow"]
+        };
+
+        function getBinaryExpAST(operator, operand1, operand2) {
+            return {
+                type:
+                    operator === "&&" || operator === "||"
+                        ? "LogicalExpression"
+                        : "BinaryExpression",
+                left: ASTUtils._getArgsAST([operand1])[0],
+                right: ASTUtils._getArgsAST([operand2])[0],
+                operator: `${operator}`
+            };
+        }
+
+        function getUnaryExpAST(operator, operand) {
+            return {
+                type: "UnaryExpression",
+                operator: `${operator}`,
+                argument: ASTUtils._getArgsAST([operand])[0],
+                prefix: true
+            };
+        }
+
+        function getCallExpAST(methodName, args) {
+            return {
+                type: "CallExpression",
+                callee: {
+                    type: "Identifier",
+                    name: `${methodName}`
+                },
+                arguments: ASTUtils._getArgsAST(args)
+            };
+        }
+
+        if (methodName in mathOps) {
+            if (mathOps[methodName][0] === "binexp") {
+                return getBinaryExpAST(mathOps[methodName][1], ...args);
+            } else if (mathOps[methodName][0] === "unexp") {
+                return getUnaryExpAST(mathOps[methodName][1], args[0]);
+            } else {
+                return getCallExpAST(mathOps[methodName][1], args);
+            }
+        } else {
+            return getCallExpAST(JSInterface.getMethodName(methodName), args);
+        }
+    }
+
+    /**
+     * Returns list of Abstract Syntax Trees corresponding to each argument of args.
+     *
+     * @static
+     * @param {[*]} args - tree of arguments
+     * @returns {[Object]} list of Abstract Syntax Trees
+     */
+    static _getArgsAST(args) {
+        if (args === undefined || args === null) return [];
+
+        const ASTs = [];
+        for (const arg of args) {
+            if (arg === null) {
+                ASTs.push({
+                    type: "Literal",
+                    value: null
+                });
+            } else if (typeof arg === "object") {
+                if (JSInterface.isGetter(arg[0])) {
+                    ASTs.push(ASTUtils._getGetAST(JSInterface.getGetterName(arg[0])));
+                } else {
+                    ASTs.push(
+                        JSInterface.methodReturns(arg[0])
+                            ? ASTUtils._getMethodCallAST(arg[0], arg[1], { statement: false })
+                            : ASTUtils._getArgExpAST(arg[0], arg[1])
+                    );
+                }
+            } else {
+                if (typeof arg === "string" && arg.includes("_")) {
+                    const sepIndex = arg.indexOf("_");
+                    const type = arg.slice(0, sepIndex);
+                    const argVal = arg.slice(sepIndex + 1);
+                    if (type === "bool") {
+                        ASTs.push({
+                            type: "Literal",
+                            value: argVal === "true"
+                        });
+                    } else if (type === "box") {
+                        if (ASTUtils._isValidIdentifier(argVal)) {
+                            ASTs.push({
+                                type: "Identifier",
+                                name: argVal
+                            });
+                        } else {
+                            ASTs.push(
+                                ASTUtils._getMouseCallExpression("getBox", [
+                                    {
+                                        type: "Literal",
+                                        value: argVal
+                                    }
+                                ])
+                            );
+                        }
+                    } else {
+                        ASTs.push({
+                            type: "Literal",
+                            value: arg
+                        });
+                    }
+                } else {
+                    ASTs.push({
+                        type: "Literal",
+                        value: arg
+                    });
+                }
+            }
+        }
+
+        return ASTs;
+    }
+
+    /**
+     * Returns the Abstract Syntax Tree for a method call with function argument.
+     *
+     * @static
+     * @param {String} methodName - method name
+     * @param {[*]} args - tree of arguments
+     * @param {[*]} flows - tree of flow statements
+     * @param {Number} iteratorNum - iterator index number
+     * @returns {Object} - Abstract Syntax Tree of method call
+     */
+    static _getMethodCallClampAST(methodName, args, flows, iteratorNum) {
+        const AST = ASTUtils._getMethodCallAST(methodName, args);
+
+        AST["expression"]["argument"]["arguments"].push({
+            type: "ArrowFunctionExpression",
+            params: [],
+            body: {
+                type: "BlockStatement",
+                body: ASTUtils._getBlockAST(flows, iteratorNum)
+            },
+            async: true,
+            expression: false
+        });
+
+        last(AST["expression"]["argument"]["arguments"])["body"]["body"].push({
+            type: "ReturnStatement",
+            argument: {
+                type: "MemberExpression",
+                object: {
+                    type: "Identifier",
+                    name: "mouse"
+                },
+                computed: false,
+                property: {
+                    type: "Identifier",
+                    name: "ENDFLOW"
+                }
+            }
+        });
+
+        return AST;
+    }
+
+    /**
+     * Returns every Stop block marker inside node, including ones in nested
+     * clamp callbacks. Markers a nested loop took over are no longer markers.
+     *
+     * @static
+     * @param {Object} node - Abstract Syntax Tree to search
+     * @returns {[Object]} Stop block markers
+     */
+    static _findStopBlocks(node) {
+        const stops = [];
+        const visit = child => {
+            if (Array.isArray(child)) {
+                child.forEach(visit);
+            } else if (child !== null && typeof child === "object") {
+                if (child.stopBlock) stops.push(child);
+                Object.values(child).forEach(visit);
+            }
+        };
+        visit(node);
+        return stops;
+    }
+
+    /**
+     * Returns the loop so that a Stop block inside it works as it does in
+     * Music Blocks (Logo.doBreak): the rest of the current iteration still
+     * runs and then the loop ends. A bare `break` would leave at once, only
+     * leave a switch, or be a syntax error inside a clamp callback, so each
+     * Stop sets a flag that the loop checks at the end of every iteration:
+     * `{ let stopLoop = false; loop { ...; stopLoop = true; ...; if (stopLoop) break; } }`
+     *
+     * @static
+     * @param {Object} loop - Abstract Syntax Tree of a for, while or do-while loop
+     * @returns {Object} the loop, or a block holding the flag and the loop
+     */
+    static _getStoppableLoopAST(loop) {
+        const stops = ASTUtils._findStopBlocks(loop.body);
+        if (stops.length === 0) return loop;
+
+        // A box can have any valid name, so pick one the loop doesn't use.
+        const used = ASTUtils._getIdentifierNames(loop);
+        let flag = "stopLoop";
+        while (used.has(flag)) flag = "_" + flag;
+
+        for (const stop of stops) {
+            delete stop.label;
+            delete stop.stopBlock;
+            Object.assign(stop, {
+                type: "ExpressionStatement",
+                expression: {
+                    type: "AssignmentExpression",
+                    operator: "=",
+                    left: { type: "Identifier", name: flag },
+                    right: { type: "Literal", value: true }
+                }
+            });
+        }
+
+        loop.body.body.push({
+            type: "IfStatement",
+            test: { type: "Identifier", name: flag },
+            consequent: { type: "BreakStatement", label: null },
+            alternate: null
+        });
+
+        return {
+            type: "BlockStatement",
+            body: [
+                {
+                    type: "VariableDeclaration",
+                    kind: "let",
+                    declarations: [
+                        {
+                            type: "VariableDeclarator",
+                            id: { type: "Identifier", name: flag },
+                            init: { type: "Literal", value: false }
+                        }
+                    ]
+                },
+                loop
+            ]
+        };
+    }
+
+    /**
+     * Resolves the Stop block markers that no loop took over. With no loop,
+     * Logo.doBreak drops the next pending continuation, so a Stop skips the
+     * rest of the stack one level above the clamp it is in, and the program
+     * carries on after that. For example, in `Start { Note { Stop }; X }` X
+     * doesn't run, and in `Start { if { if { Stop }; W }; X }` W doesn't but
+     * X does.
+     *
+     * That outer stack is left with `return` when it is a function body
+     * (Start, an action or a clamp callback), or with a labeled `break` when
+     * it is a block. When the Stop is inside a clamp callback, which a return
+     * or break can't leave, it sets a flag that is checked after the clamp.
+     * A Stop directly in Start or an action just returns.
+     *
+     * A Stop directly in an action that is called from a loop also ends that loop in
+     * Music Blocks (#9004), see reportStop and _getActionCallAST.
+     *
+     * @static
+     * @param {Object} body - BlockStatement of a Start or action function
+     * @param {String} end - "ENDMOUSE" or "ENDFLOW", the value the body returns
+     * @param {Boolean} [reportStop=false] - whether a Stop directly in the body is reported to
+     * the caller: it sets a flag, the rest of the body still runs (as in Logo.doBreak when a
+     * loop is above the call) and the body returns STOPFLOW instead of ENDFLOW
+     * @returns {String|null} the name of the parameter that tells the action it is called
+     * from a loop, when reportStop is set
+     */
+    static _resolveStopBlocks(body, end, reportStop = false) {
+        const used = ASTUtils._getIdentifierNames(body);
+        let count = 0;
+        const newName = () => {
+            let name;
+            do {
+                name = "stop" + count++;
+            } while (used.has(name));
+            used.add(name);
+            return name;
+        };
+
+        const identifier = name => ({ type: "Identifier", name });
+        const returnEnd = value => ({
+            type: "ReturnStatement",
+            argument: {
+                type: "MemberExpression",
+                object: identifier("mouse"),
+                computed: false,
+                property: identifier(value)
+            }
+        });
+        const replace = (node, replacement) => {
+            Object.keys(node).forEach(key => delete node[key]);
+            Object.assign(node, replacement);
+        };
+
+        // Leaves a stack: return from a function body, or break out of a
+        // block, which gets a label the first time it is needed.
+        const exitStatement = stack => {
+            if (stack.end !== null) return returnEnd(stack.end);
+            if (stack.label === null) {
+                stack.label = newName();
+                stack.wrap(stack.label);
+            }
+            return { type: "BreakStatement", label: identifier(stack.label) };
+        };
+
+        // Every statement list directly inside statement (if/else branches,
+        // switch cases, clamp callbacks), without looking inside those lists.
+        const innerStacks = statement => {
+            const stacks = [];
+            const visit = (node, parent, key) => {
+                if (Array.isArray(node)) {
+                    node.forEach((child, i) => visit(child, node, i));
+                } else if (node !== null && typeof node === "object") {
+                    if (node.type === "ArrowFunctionExpression") {
+                        stacks.push({ list: node.body.body, end: "ENDFLOW" });
+                    } else if (node.type === "BlockStatement") {
+                        stacks.push({
+                            list: node.body,
+                            end: null,
+                            wrap: label => {
+                                parent[key] = {
+                                    type: "LabeledStatement",
+                                    label: identifier(label),
+                                    body: node
+                                };
+                            }
+                        });
+                    } else if (node.type === "SwitchCase") {
+                        stacks.push({
+                            list: node.consequent,
+                            end: null,
+                            wrap: label => {
+                                // Keep the break that ends the case outside.
+                                const statements = node.consequent.splice(
+                                    0,
+                                    node.consequent.length - 1
+                                );
+                                node.consequent.unshift({
+                                    type: "LabeledStatement",
+                                    label: identifier(label),
+                                    body: { type: "BlockStatement", body: statements }
+                                });
+                            }
+                        });
+                    } else {
+                        Object.entries(node).forEach(([k, child]) => visit(child, node, k));
+                    }
+                }
+            };
+            visit(statement, null, null);
+            return stacks;
+        };
+
+        const resolve = (stack, outer) => {
+            for (const statement of [...stack.list]) {
+                if (statement.stopBlock) {
+                    if (
+                        outer === null &&
+                        reportStop &&
+                        stack.list
+                            .slice(stack.list.indexOf(statement) + 1)
+                            .some(next => next.type !== "ReturnStatement")
+                    ) {
+                        // A Stop with more blocks after it. Called from a loop, the rest still
+                        // runs and the loop ends; otherwise the Stop ends the action there
+                        // (Logo.doBreak drops the action's own pending blocks).
+                        replace(statement, {
+                            type: "IfStatement",
+                            test: identifier(inLoopParam),
+                            consequent: {
+                                type: "BlockStatement",
+                                body: [
+                                    {
+                                        type: "ExpressionStatement",
+                                        expression: {
+                                            type: "AssignmentExpression",
+                                            operator: "=",
+                                            left: identifier(reportFlag),
+                                            right: { type: "Literal", value: true }
+                                        }
+                                    }
+                                ]
+                            },
+                            alternate: { type: "BlockStatement", body: [returnEnd(stack.end)] }
+                        });
+                    } else if (outer === null && reportStop) {
+                        replace(statement, {
+                            type: "ExpressionStatement",
+                            expression: {
+                                type: "AssignmentExpression",
+                                operator: "=",
+                                left: identifier(reportFlag),
+                                right: { type: "Literal", value: true }
+                            }
+                        });
+                    } else if (outer === null) {
+                        replace(statement, returnEnd(stack.end));
+                    } else if (stack.end === null) {
+                        // No function in between: leave the outer stack directly.
+                        replace(statement, exitStatement(outer.stack));
+                    } else {
+                        // Inside a clamp callback: set a flag the outer stack checks.
+                        if (!outer.flag) {
+                            outer.flag = newName();
+                            const at = outer.stack.list.indexOf(outer.statement);
+                            outer.stack.list.splice(at, 0, {
+                                type: "VariableDeclaration",
+                                kind: "let",
+                                declarations: [
+                                    {
+                                        type: "VariableDeclarator",
+                                        id: identifier(outer.flag),
+                                        init: { type: "Literal", value: false }
+                                    }
+                                ]
+                            });
+                            outer.stack.list.splice(at + 2, 0, {
+                                type: "IfStatement",
+                                test: identifier(outer.flag),
+                                consequent: exitStatement(outer.stack),
+                                alternate: null
+                            });
+                        }
+                        replace(statement, {
+                            type: "ExpressionStatement",
+                            expression: {
+                                type: "AssignmentExpression",
+                                operator: "=",
+                                left: identifier(outer.flag),
+                                right: { type: "Literal", value: true }
+                            }
+                        });
+                    }
+                    continue;
+                }
+                const context = { stack, statement, flag: null };
+                for (const inner of innerStacks(statement)) {
+                    resolve({ label: null, ...inner }, context);
+                }
+            }
+        };
+
+        const reportFlag = reportStop ? newName() : null;
+        const inLoopParam = reportStop ? newName() : null;
+        resolve({ list: body.body, end, label: null }, null);
+
+        if (reportStop) {
+            body.body.unshift({
+                type: "VariableDeclaration",
+                kind: "let",
+                declarations: [
+                    {
+                        type: "VariableDeclarator",
+                        id: identifier(reportFlag),
+                        init: { type: "Literal", value: false }
+                    }
+                ]
+            });
+            // The body ends with `return mouse.ENDFLOW`.
+            const last = body.body[body.body.length - 1];
+            if (last.type === "ReturnStatement") {
+                last.argument = {
+                    type: "ConditionalExpression",
+                    test: identifier(reportFlag),
+                    consequent: returnEnd("STOPFLOW").argument,
+                    alternate: last.argument
+                };
+            }
+            return inLoopParam;
+        }
+        return null;
+    }
+
+    /**
+     * Returns list of Abstract Syntax Trees corresponding to each flow statement.
+     *
+     * @static
+     * @param {[*]} flows - tree of flow statements
+     * @param {Number} iterMax - highest iterator number in block
+     * @returns {[Object]} list of Abstract Syntax Trees
+     * @throws {String} INVALID BLOCK Error
+     */
+    static _getBlockAST(flows, iterMax) {
+        if (flows === undefined || flows === null) return [];
+
+        const ASTs = [];
+        for (const flow of flows) {
+            if (flow[0] === "comment") {
+                // Comment blocks have no effect in JS output.
+                continue;
+            }
+            if (flow[0] === "if") {
+                ASTs.push(ASTUtils._getIfAST(flow[1], flow[2], undefined, iterMax));
+            } else if (flow[0] === "ifthenelse") {
+                ASTs.push(ASTUtils._getIfAST(flow[1], flow[2], flow[3], iterMax));
+            } else if (flow[0] === "repeat") {
+                ASTs.push(
+                    ASTUtils._getStoppableLoopAST(
+                        ASTUtils._inLoop(() => ASTUtils._getForLoopAST(flow[1], flow[2], iterMax))
+                    )
+                );
+            } else if (flow[0] === "while") {
+                ASTs.push(
+                    ASTUtils._getStoppableLoopAST(
+                        ASTUtils._inLoop(() => ASTUtils._getWhileLoopAST(flow[1], flow[2], iterMax))
+                    )
+                );
+            } else if (flow[0] === "forever") {
+                ASTs.push(
+                    ASTUtils._getStoppableLoopAST(
+                        ASTUtils._inLoop(() => ASTUtils._getWhileLoopAST([1000], flow[2], iterMax))
+                    )
+                );
+            } else if (flow[0] === "until") {
+                ASTs.push(
+                    ASTUtils._getStoppableLoopAST(
+                        ASTUtils._inLoop(() =>
+                            ASTUtils._getDoWhileLoopAST(flow[1], flow[2], iterMax)
+                        )
+                    )
+                );
+            } else if (flow[0] === "break") {
+                // The Stop block. Its loop (or the enclosing Start or action,
+                // if there is no loop) turns this marker into real code.
+                ASTs.push({
+                    type: "BreakStatement",
+                    label: null,
+                    stopBlock: true
+                });
+            } else if (flow[0] === "switch") {
+                ASTs.push({
+                    type: "SwitchStatement",
+                    discriminant: ASTUtils._getArgsAST(flow[1])[0],
+                    cases: ASTUtils._getBlockAST(flow[2], iterMax)
+                });
+            } else if (flow[0] === "case") {
+                const AST = {
+                    type: "SwitchCase",
+                    test: ASTUtils._getArgsAST(flow[1])[0],
+                    consequent: [
+                        {
+                            type: "BreakStatement",
+                            label: null
+                        }
+                    ]
+                };
+
+                const flowASTs = ASTUtils._getBlockAST(flow[2], iterMax);
+                for (const i in flowASTs) {
+                    AST["consequent"].splice(i, 0, flowASTs[i]);
+                }
+
+                ASTs.push(AST);
+            } else if (flow[0] === "defaultcase") {
+                ASTs.push({
+                    type: "SwitchCase",
+                    test: null,
+                    consequent: [
+                        ...ASTUtils._getBlockAST(flow[2], iterMax),
+                        {
+                            type: "BreakStatement",
+                            label: null
+                        }
+                    ]
+                });
+            } else if (flow[0] === "increment") {
+                ASTs.push(ASTUtils._getIncrementStmntAST(flow[1], true));
+            } else if (flow[0] === "incrementOne") {
+                ASTs.push(ASTUtils._getIncrementStmntAST([flow[1][0], 1], true));
+            } else if (flow[0] === "decrementOne") {
+                ASTs.push(ASTUtils._getIncrementStmntAST([flow[1][0], 1], false));
+            } else if (flow[0] === "storein") {
+                const nameAst = ASTUtils._getArgsAST([flow[1][0]])[0];
+                const valueAst = ASTUtils._getArgsAST([flow[1][1]])[0];
+                if (
+                    nameAst &&
+                    nameAst.type === "Literal" &&
+                    ASTUtils._isValidIdentifier(nameAst.value)
+                ) {
+                    ASTs.push({
+                        type: "VariableDeclaration",
+                        kind: "var",
+                        declarations: [
+                            {
+                                type: "VariableDeclarator",
+                                id: {
+                                    type: "Identifier",
+                                    name: nameAst.value
+                                },
+                                init: valueAst
+                            }
+                        ]
+                    });
+                } else {
+                    ASTs.push({
+                        type: "ExpressionStatement",
+                        expression: {
+                            type: "AwaitExpression",
+                            argument: ASTUtils._getMouseCallExpression("setBox", [
+                                nameAst,
+                                valueAst
+                            ])
+                        }
+                    });
+                }
+            } else if (flow[0].split("_").length > 1) {
+                const splitIndex = flow[0].indexOf("_");
+                const instruction = flow[0].slice(0, splitIndex);
+                const idName = flow[0].slice(splitIndex + 1);
+                if (instruction === "storein2") {
+                    if (ASTUtils._isValidIdentifier(idName)) {
+                        ASTs.push({
+                            type: "VariableDeclaration",
+                            kind: "var",
+                            declarations: [
+                                {
+                                    type: "VariableDeclarator",
+                                    id: {
+                                        type: "Identifier",
+                                        name: idName
+                                    },
+                                    init: ASTUtils._getArgsAST(flow[1])[0]
+                                }
+                            ]
+                        });
+                    } else {
+                        ASTs.push({
+                            type: "ExpressionStatement",
+                            expression: {
+                                type: "AwaitExpression",
+                                argument: ASTUtils._getMouseCallExpression("setBox", [
+                                    {
+                                        type: "Literal",
+                                        value: idName
+                                    },
+                                    ASTUtils._getArgsAST(flow[1])[0]
+                                ])
+                            }
+                        });
+                    }
+                } else if (instruction === "nameddo") {
+                    ASTs.push(ASTUtils._getActionCallAST(idName, flow[1]));
+                } else if (instruction === "nameddoArg") {
+                    ASTs.push(ASTUtils._getActionCallAST(idName, flow[1]));
+                }
+            } else {
+                if (JSInterface.isSetter(flow[0])) {
+                    ASTs.push(ASTUtils._getSetAST(JSInterface.getSetterName(flow[0]), flow[1]));
+                } else if (JSInterface.isMethod(flow[0])) {
+                    if (JSInterface.isClampBlock(flow[0])) {
+                        // has inner flow
+                        ASTs.push(ASTUtils._getMethodCallClampAST(...flow, iterMax));
+                    } else {
+                        // no inner flow
+                        ASTs.push(ASTUtils._getMethodCallAST(...flow));
+                    }
+                } else {
+                    throw `CANNOT PROCESS "${flow[0]}" BLOCK`;
+                }
+            }
+        }
+
+        return ASTs;
+    }
+
+    /**
+     * Returns the complete Abstract Syntax Tree specific to the mouse corresponding to the tree.
+     *
+     * @static
+     * @param {String} methodName - method name
+     * @param {[*]} tree - stacks tree for the mouse
+     * @returns {Object} mouse Abstract Syntax Tree for the tree
+     */
+    static getMethodAST(methodName, tree) {
+        const AST = ASTUtils._getMethodDefAST(methodName);
+
+        const ASTs = ASTUtils._getBlockAST(tree);
+        for (const i in ASTs) {
+            AST["declarations"][0]["init"]["body"]["body"].splice(i, 0, ASTs[i]);
+        }
+        const inLoopParam = ASTUtils._resolveStopBlocks(
+            AST["declarations"][0]["init"]["body"],
+            "ENDFLOW",
+            ASTUtils._stoppingActions.has(methodName)
+        );
+        if (inLoopParam !== null) {
+            // The call sites inside a loop pass true.
+            AST["declarations"][0]["init"]["params"].push({
+                type: "AssignmentPattern",
+                left: { type: "Identifier", name: inLoopParam },
+                right: { type: "Literal", value: false }
+            });
+        }
+
+        return AST;
+    }
+
+    /**
+     * Returns the complete Abstract Syntax Tree specific to the mouse corresponding to the tree.
+     *
+     * @static
+     * @param {[*]} tree - stacks tree for the mouse
+     * @returns {Object} mouse Abstract Syntax Tree for the tree
+     */
+    static getMouseAST(tree) {
+        const AST = deepClone(ASTUtils._mouseAST);
+
+        const ASTs = ASTUtils._getBlockAST(tree);
+        for (const i in ASTs) {
+            AST["expression"]["arguments"][0]["body"]["body"].splice(i, 0, ASTs[i]);
+        }
+        ASTUtils._resolveStopBlocks(AST["expression"]["arguments"][0]["body"], "ENDMOUSE");
+
+        return AST;
+    }
+}
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = ASTUtils;
+}

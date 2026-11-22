@@ -1,0 +1,895 @@
+// Copyright (c) 2024 Abhijeet Singh
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/*
+   global
+
+   _, docById, DOUBLEFLAT, FLAT, NATURAL, SHARP, DOUBLESHARP,
+   CUSTOMSAMPLES, wheelnav, getVoiceSynthName, Singer, DRUMS, Tone,
+   instruments, slicePath, platformColor, ABCJS, ensureABCJS
+*/
+
+/* exported Abhijeet Singh */
+/** AMD module dependencies for lazy loading. */
+AIWidget.dependencies = ["widgets/aiwidget"];
+
+/**
+ * Represents a AI Widget.
+ * @constructor
+ */
+function AIWidget() {
+    const ICONSIZE = 32;
+    const SAMPLEWIDTH = 800;
+    const SAMPLEHEIGHT = 400;
+    // Don't include natural when construcing the note name...
+    const EXPORTACCIDENTALNAMES = [DOUBLEFLAT, FLAT, "", SHARP, DOUBLESHARP];
+    // ...but display it in the selector.
+    const ACCIDENTALNAMES = [DOUBLEFLAT, FLAT, NATURAL, SHARP, DOUBLESHARP];
+    const SOLFEGENAMES = ["do", "re", "mi", "fa", "sol", "la", "ti", "do"];
+    const PITCHNAMES = ["C", "D", "E", "F", "G", "A", "B"];
+    const MAJORSCALE = [0, 2, 4, 5, 7, 9, 11];
+    const REFERENCESAMPLE = "electronic synth";
+    const DEFAULTSAMPLE = "electronic synth";
+    const CENTERPITCHHERTZ = 220;
+    const SAMPLEWAITTIME = 500;
+
+    // Oscilloscope constants
+    const SAMPLEANALYSERSIZE = 8192;
+    const SAMPLEOSCCOLORS = ["#3030FF", "#FF3050"];
+    let abcNotationSong = "";
+    this.midiBuffer = null;
+    /**
+     * Reference to the timbre block.
+     * @type {number | null}
+     */
+    this.timbreBlock;
+
+    /**
+     * Array to store sample-related data.
+     * @type {Array}
+     */
+    this.sampleArray;
+
+    /**
+     * String representing sample data.
+     * @type {string}
+     */
+    this.sampleData = "";
+
+    /**
+     * Name of the sample.
+     * @type {string}
+     */
+    this.sampleName = DEFAULTSAMPLE;
+    /**
+     * Contains ABC notation generated song from the LLM
+     * @type {string}
+     */
+
+    /**
+     * Pitch of the sample.
+     * @type {string}
+     */
+    this.samplePitch = "sol";
+
+    /**
+     * Octave of the sample.
+     * @type {string}
+     */
+    this.sampleOctave = "4";
+
+    /**
+     * Pitch center.
+     * @type {number}
+     */
+    this.pitchCenter = 9;
+
+    /**
+     * Accidental center.
+     * @type {number}
+     */
+    this.accidentalCenter = 2;
+
+    /**
+     * Octave center.
+     * @type {number}
+     */
+    this.octaveCenter = 4;
+
+    /**
+     * Sample length.
+     * @type {number}
+     */
+    this.sampleLength = 1000;
+
+    /**
+     * Pitch analyzers.
+     * @type {object}
+     */
+    this.pitchAnalysers = {};
+
+    /**
+     * Maps each synth name to the pitch analyser index and synth object it is
+     * currently connected to.
+     * @type {object}
+     */
+    this._connectedSynths = {};
+
+    /**
+     * Disposes the pitch analysers.
+     * @private
+     * @returns {void}
+     */
+    this._disposePitchAnalysers = function () {
+        for (const id in this.pitchAnalysers) {
+            const analyser = this.pitchAnalysers[id];
+            if (analyser) {
+                analyser.dispose();
+            }
+        }
+        this.pitchAnalysers = {};
+        this._connectedSynths = {};
+    };
+
+    /**
+     * Pauses the sample playback.
+     * @returns {void}
+     */
+    this.pause = function () {
+        if (this.midiBuffer) {
+            this.midiBuffer.stop();
+        }
+    };
+
+    /**
+     * Resumes the sample playback.
+     * @returns {void}
+     */
+    this.resume = function () {
+        const pauseImg = document.createElement("img");
+        pauseImg.src = "header-icons/pause-button.svg";
+        pauseImg.title = _("Pause");
+        pauseImg.alt = _("Pause");
+        pauseImg.height = ICONSIZE;
+        pauseImg.width = ICONSIZE;
+        pauseImg.style.verticalAlign = "middle";
+        this.playBtn.textContent = "";
+        this.playBtn.appendChild(pauseImg);
+        this.isMoving = true;
+    };
+
+    /**
+     * Sets the pitch center for the sample.
+     * @param {string} p - The pitch to set as the center.
+     * @returns {void}
+     */
+    this._usePitch = function (p) {
+        const number = SOLFEGENAMES.indexOf(p);
+        this.pitchCenter = number === -1 ? 0 : number;
+    };
+
+    /**
+     * Sets the accidental center for the sample.
+     * @param {string} a - The accidental to set as the center.
+     * @returns {void}
+     */
+    this._useAccidental = function (a) {
+        const number = ACCIDENTALNAMES.indexOf(a);
+        this.accidentalCenter = number === -1 ? 2 : number;
+    };
+
+    /**
+     * Sets the octave center for the sample.
+     * @param {string} o - The octave to set as the center.
+     * @returns {void}
+     */
+    this._useOctave = function (o) {
+        this.octaveCenter = parseInt(o, 10);
+    };
+
+    /**
+     * Gets the length of the sample and displays a warning if it exceeds 1MB.
+     * @returns {void}
+     */
+    this.getSampleLength = function () {
+        if (this.sampleData.length > 1333333) {
+            this.activity.errorMsg(_("Warning: Sample is bigger than 1MB."), this.timbreBlock);
+        }
+    };
+
+    /**
+     * Displays an error message when the uploaded sample is not a .wav file.
+     * @returns {void}
+     */
+    this.showSampleTypeError = function () {
+        this.activity.errorMsg(_("Upload failed: Sample is not a .wav file."), this.timbreBlock);
+    };
+
+    /**
+     * Saves the sample and generates a new sample block with the provided data.
+     * @private
+     * @returns {void}
+     */
+    this.__save = async function () {
+        await ensureABCJS();
+        const tunebook = new ABCJS.parseOnly(abcNotationSong);
+        const playableTunes = tunebook.filter(tune =>
+            tune.lines?.some(line =>
+                line.staff?.some(staff =>
+                    staff.voices?.some(voice => voice.some(element => element.el_type === "note"))
+                )
+            )
+        );
+
+        if (playableTunes.length === 0) {
+            this.activity.errorMsg(_("Enter ABC notation containing at least one note."));
+            return;
+        }
+
+        // Generate the blocks the way Load project imports an .abc file.
+        await Promise.all(playableTunes.map(tune => this.activity.parseABC(tune)));
+        this.activity.textMsg(_("New start block generated."));
+    };
+
+    /**
+     * Saves the sample, telling the user when the blocks cannot be generated.
+     * @private
+     * @returns {Promise<void>}
+     */
+    this._saveSample = function () {
+        return this.__save().catch(() => {
+            this.activity.errorMsg(_("Unable to generate blocks."));
+        });
+    };
+
+    /**
+     * Gets the status of the save lock.
+     * @private
+     * @returns {boolean} The status of the save lock.
+     */
+    this._get_save_lock = function () {
+        return this._save_lock;
+    };
+
+    /**
+     * Initializes the Sample Widget.
+     * @param {object} activity - The activity object.
+     * @returns {void}
+     */
+    this.init = function (activity) {
+        this._disposePitchAnalysers();
+        this.activity = activity;
+        this._directions = [];
+        this._widgetFirstTimes = [];
+        this._widgetNextTimes = [];
+        this._firstClickTimes = null;
+        this.isMoving = false;
+        this.activity.logo.synth.loadSynth(0, getVoiceSynthName(DEFAULTSAMPLE));
+        this.reconnectSynthsToAnalyser();
+
+        this.running = true;
+        if (this.drawVisualIDs) {
+            for (const id of Object.keys(this.drawVisualIDs)) {
+                cancelAnimationFrame(this.drawVisualIDs[id]);
+            }
+        }
+
+        this.drawVisualIDs = {};
+        const widgetWindow = window.widgetWindows.windowFor(this, "AI");
+        this.widgetWindow = widgetWindow;
+        this.divisions = [];
+        widgetWindow.clear();
+        widgetWindow.show();
+
+        // For the button callbacks
+        const that = this;
+
+        widgetWindow.onclose = () => {
+            if (this.drawVisualIDs) {
+                for (const id of Object.keys(this.drawVisualIDs)) {
+                    cancelAnimationFrame(this.drawVisualIDs[id]);
+                }
+            }
+
+            this.running = false;
+
+            docById("wheelDivptm").style.display = "none";
+            if (this._pitchWheel !== undefined) {
+                this._pitchWheel.removeWheel();
+            }
+            if (this._exitWheel !== undefined) {
+                this._exitWheel.removeWheel();
+            }
+            if (this._accidentalsWheel !== undefined) {
+                this._accidentalsWheel.removeWheel();
+            }
+            if (this._octavesWheel !== undefined) {
+                this._octavesWheel.removeWheel();
+            }
+            this._disposePitchAnalysers();
+            widgetWindow.destroy();
+        };
+
+        widgetWindow.onmaximize = this._scale.bind(this);
+
+        this.playBtn = widgetWindow.addButton("play-button.svg", ICONSIZE, _("Play"));
+        this.playBtn.onclick = () => {
+            if (this.isMoving) {
+                this.pause();
+                const playImg = document.createElement("img");
+                playImg.src = "header-icons/play-button.svg";
+                playImg.title = _("Play");
+                playImg.alt = _("Play");
+                playImg.height = ICONSIZE;
+                playImg.width = ICONSIZE;
+                playImg.style.verticalAlign = "middle";
+                this.playBtn.textContent = "";
+                this.playBtn.appendChild(playImg);
+                this.isMoving = false;
+            } else {
+                if (!(abcNotationSong === "")) {
+                    this.resume();
+                    this._playABCSong();
+                }
+            }
+        };
+
+        this._save_lock = false;
+        widgetWindow.addButton("export-chunk.svg", ICONSIZE, _("Generate blocks"), "").onclick =
+            function () {
+                // Debounce button
+                if (!that._get_save_lock()) {
+                    that._save_lock = true;
+                    that._saveSample();
+                    setTimeout(function () {
+                        that._save_lock = false;
+                    }, 1000);
+                }
+            };
+
+        widgetWindow.addButton("utility-button.svg", ICONSIZE, _("Set API Key"), "").onclick =
+            async function () {
+                const currentKey = getGroqApiKey(that.activity);
+                let key;
+
+                if (window.MBDialog && typeof window.MBDialog.prompt === "function") {
+                    key = await window.MBDialog.prompt({
+                        title: _("Set API Key"),
+                        message: _("Enter your Groq API Key:"),
+                        defaultValue: currentKey,
+                        okText: _("Save"),
+                        cancelText: _("Cancel")
+                    });
+                } else {
+                    key = prompt(_("Enter your Groq API Key: %s").replace(/%s/g, currentKey));
+                }
+
+                if (key !== null) {
+                    setGroqApiKey(key.trim());
+                }
+            };
+
+        widgetWindow.sendToCenter();
+        this.widgetWindow = widgetWindow;
+
+        this._scale();
+
+        this.activity.textMsg(_("AI Music"));
+        this.pause();
+
+        widgetWindow.sendToCenter();
+    };
+
+    /**
+     * Adds the current sample to the list of custom samples.
+     * @returns {void}
+     */
+    this._addSample = function () {
+        for (let i = 0; i < CUSTOMSAMPLES.length; i++) {
+            if (CUSTOMSAMPLES[i][0] === this.sampleName) {
+                return;
+            }
+        }
+        CUSTOMSAMPLES.push([this.sampleName, this.sampleData]);
+    };
+
+    /**
+     * Plays the reference pitch based on the current sample's pitch, accidental, and octave.
+     * @returns {void}
+     */
+    this._playABCSong = async function () {
+        await ensureABCJS();
+        const abc = abcNotationSong;
+
+        const visualObj = ABCJS.renderAbc("*", abc, {
+            responsive: "resize"
+        })[0];
+
+        if (ABCJS.synth.supportsAudio()) {
+            const audioContext = this.activity.logo.synth.tone.context;
+            try {
+                await audioContext.resume();
+
+                if (this.midiBuffer) {
+                    this.midiBuffer.stop();
+                }
+
+                this.midiBuffer = new ABCJS.synth.CreateSynth();
+
+                await this.midiBuffer.init({
+                    visualObj: visualObj,
+                    audioContext: audioContext,
+                    millisecondsPerMeasure: visualObj.millisecondsPerMeasure(),
+                    soundFontUrl: "https://paulrosen.github.io/abcjs-soundfonts/FluidR3_GM"
+                });
+
+                await this.midiBuffer.prime();
+                this.midiBuffer.start();
+            } catch (error) {
+                console.warn("synth error", error);
+                this.activity.errorMsg(_("Synth error: %s").replace(/%s/g, error.message));
+            }
+        } else {
+            this.activity.errorMsg(_("Audio not supported in this browser."));
+        }
+    };
+
+    /**
+     * Plays the current sample.
+     * @returns {void}
+     */
+    this._playSample = function () {
+        if (this.sampleName !== null && this.sampleName !== "") {
+            this.reconnectSynthsToAnalyser();
+
+            this.activity.logo.synth.trigger(
+                0,
+                [CENTERPITCHHERTZ],
+                this.sampleLength / 1000.0,
+                "customsample_" + this.originalSampleName,
+                null,
+                null,
+                false
+            );
+        }
+    };
+
+    /**
+     * Waits for a specified time and then plays the sample.
+     * @returns {Promise<string>} A promise that resolves once the sample is played.
+     */
+    this._waitAndPlaySample = function () {
+        return new Promise(resolve => {
+            setTimeout(() => {
+                this._playSample();
+                resolve("played");
+                this._endPlaying();
+            }, SAMPLEWAITTIME);
+        });
+    };
+
+    /**
+     * Asynchronously plays the sample after a delay.
+     * @returns {Promise<void>} A promise that resolves once the sample is played.
+     */
+    this._playDelayedSample = async function () {
+        await this._waitAndPlaySample();
+    };
+
+    /**
+     * Waits for the sample to finish playing.
+     * @returns {Promise<string>} A promise that resolves once the sample playback ends.
+     */
+    this._waitAndEndPlaying = function () {
+        return new Promise(resolve => {
+            setTimeout(() => {
+                this.pause();
+                resolve("ended");
+            }, this.sampleLength);
+        });
+    };
+
+    /**
+     * Asynchronously ends the sample playback after waiting for its duration.
+     * @returns {Promise<void>} A promise that resolves once the sample playback ends.
+     */
+    this._endPlaying = async function () {
+        await this._waitAndEndPlaying();
+    };
+
+    /**
+     * Reconnects synths to the analyser for pitch analysis.
+     * @returns {void}
+     */
+    this.reconnectSynthsToAnalyser = function () {
+        // Make two pitchAnalysers for the ref tone and the sample.
+        for (const instrument of [0, 1]) {
+            if (this.pitchAnalysers[instrument] === undefined) {
+                this.pitchAnalysers[instrument] = new Tone.Analyser({
+                    type: "waveform",
+                    size: SAMPLEANALYSERSIZE
+                });
+            }
+        }
+
+        // Connect instruments. Ref tone connects with the first pitchAnalyser.
+        for (const synth in instruments[0]) {
+            const synthObject = instruments[0][synth];
+
+            let analyser = 1;
+            if (synth === REFERENCESAMPLE) {
+                analyser = 0;
+            }
+
+            const connection = this._connectedSynths[synth];
+            if (
+                this.pitchAnalysers[analyser] &&
+                (!connection ||
+                    connection.analyser !== analyser ||
+                    connection.synth !== synthObject)
+            ) {
+                synthObject.connect(this.pitchAnalysers[analyser]);
+                this._connectedSynths[synth] = {
+                    analyser,
+                    synth: synthObject
+                };
+            }
+
+            if (synth === "customsample_" + this.originalSampleName) {
+                analyser = 1;
+                const customConnection = this._connectedSynths[synth];
+                if (
+                    this.pitchAnalysers[analyser] &&
+                    (!customConnection ||
+                        customConnection.analyser !== analyser ||
+                        customConnection.synth !== synthObject)
+                ) {
+                    synthObject.connect(this.pitchAnalysers[analyser]);
+                    this._connectedSynths[synth] = {
+                        analyser,
+                        synth: synthObject
+                    };
+                }
+            }
+        }
+    };
+
+    /**
+     * Scales the widget window and canvas based on the window's state.
+     * @returns {void}
+     */
+    this._scale = function () {
+        let width, height;
+        const body = this.widgetWindow.getWidgetBody();
+
+        // Properly remove the entire previous interface container to avoid leaks
+        const containers = body.getElementsByClassName("ai-interface-container");
+        for (let i = containers.length - 1; i >= 0; i--) {
+            body.removeChild(containers[i]);
+        }
+
+        if (!this.widgetWindow.isMaximized()) {
+            width = SAMPLEWIDTH;
+            height = SAMPLEHEIGHT;
+        } else {
+            width = this.widgetWindow.getWidgetBody().getBoundingClientRect().width;
+            height = this.widgetWindow.getWidgetFrame().getBoundingClientRect().height - 70;
+        }
+
+        this.makeCanvas(width, height, 0, true);
+        this.reconnectSynthsToAnalyser();
+    };
+
+    /**
+     * Creates a canvas element and calls LLM API for music
+     * @param {number} width - The width of the canvas.
+     * @param {number} height - The height of the canvas.
+
+     * @returns {void}
+     */
+    this.makeCanvas = function (width, height) {
+        const that = this;
+        // Build the entire widget DOM off-screen in a DocumentFragment,
+        // then append once to avoid multiple reflows.
+        const fragment = document.createDocumentFragment();
+
+        // Create a container to center the elements
+        const container = document.createElement("div");
+        container.className = "ai-interface-container";
+        fragment.appendChild(container);
+
+        // Create a scrollable container for the textarea
+        const scrollContainer = document.createElement("div");
+        scrollContainer.style.cssText =
+            "overflow-y:auto;" +
+            "height:" +
+            height +
+            "px;" +
+            "border:1px solid #ccc;" +
+            "margin-bottom:8px;" +
+            "margin-left:8px;" +
+            "display:flex;" +
+            "flex-direction:column;" +
+            "align-items:center";
+        container.appendChild(scrollContainer);
+
+        // Create the textarea element
+        const textarea = document.createElement("textarea");
+        textarea.style.cssText =
+            "height:" +
+            height +
+            "px;" +
+            "width:" +
+            width +
+            "px;" +
+            "margin-left:20px;" +
+            "font-size:20px;" +
+            "padding:10px";
+        textarea.className = "samplerTextarea";
+        scrollContainer.appendChild(textarea); // Append textarea to scroll container
+
+        // Create hint text elements
+        const hintsContainer = document.createElement("div");
+        hintsContainer.style.cssText =
+            "margin-bottom:10px;display:flex;justify-content:center;margin-top:8px";
+        const hints = ["Dance tune", "Fiddle jig", "Nice melody", "Fun song", "Simple canon"];
+        hints.forEach(hintText => {
+            const hint = document.createElement("span");
+            hint.textContent = hintText;
+            hint.style.cssText =
+                "cursor:pointer;margin-right:4px;font-size:20px;color:blue;" +
+                "background-color:rgb(227 162 162 / 80%);padding:10px;border-radius:5px";
+
+            hint.onclick = function () {
+                inputField.value = hintText;
+                hintsContainer.style.display = "none";
+            };
+
+            hintsContainer.appendChild(hint);
+        });
+
+        scrollContainer.appendChild(hintsContainer);
+
+        const inputField = document.createElement("input");
+        inputField.type = "text";
+        inputField.className = "inputField";
+        inputField.placeholder = "Enter text here";
+        inputField.style.cssText =
+            "font-size:20px;margin-right:2px;margin-left:64px;" +
+            "padding:10px;margin-bottom:10px;width:60%";
+        container.appendChild(inputField);
+
+        inputField.addEventListener("click", function () {
+            inputField.focus();
+        });
+
+        const submitButton = document.createElement("button");
+        submitButton.className = "submitButton";
+        submitButton.textContent = "Submit";
+        submitButton.style.fontSize = "20px";
+        submitButton.style.padding = "10px 20px";
+        submitButton.style.marginBottom = "20px";
+        container.appendChild(submitButton);
+
+        submitButton.onclick = function () {
+            const inputText = inputField.value.trim();
+            if (inputText === "") {
+                return;
+            }
+
+            const apiKey = getGroqApiKey(that.activity);
+            if (!apiKey) {
+                const notice = _(
+                    "Please set your Groq API Key using the settings button (wrench icon) first."
+                );
+
+                if (window.MBDialog && typeof window.MBDialog.alert === "function") {
+                    window.MBDialog.alert(notice, _("Set API Key"));
+                } else {
+                    alert(notice);
+                }
+                return;
+            }
+
+            const apiUrl = "https://api.groq.com/openai/v1/chat/completions";
+            const prompt_eng = `
+            Generate an ABC notation song based on the following description:
+            
+            ${inputText}
+            
+            {
+                "abc": "
+            X: {index}
+            T: {title}
+            M: {meter}
+            L: {length}
+            Q: {tempo}
+            K: {key}
+            {notes}
+                "
+            }
+            
+            IMPORTANT:
+            - Ensure that the response is only in ABC notation format.
+            - Use only notes, not chords.
+            - Do not provide any other content or formats, such as guitar tablature or chord diagrams.
+            - If your response includes other formats, please only output the ABC notation content within the curly braces.
+            - Do not add other text at the bottom such as "Let me know if you need any changes! "
+            `;
+
+            const requestBody = JSON.stringify({
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are a helpful assistant that generates ABC notation songs."
+                    },
+                    {
+                        role: "user",
+                        content: prompt_eng
+                    }
+                ],
+                model: "llama-3.1-8b-instant"
+            });
+
+            submitButton.disabled = true;
+            textarea.value = "Loading...";
+
+            fetch(apiUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${apiKey}`
+                },
+                body: requestBody
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        textarea.value = "Groq API Error: " + data.error.message;
+                        return;
+                    }
+
+                    if (!data.choices || data.choices.length === 0) {
+                        textarea.value = "Error: Unexpected response format from AI.";
+                        return;
+                    }
+
+                    let responseText = data.choices[0].message?.content || "";
+
+                    // Robustly strip markdown code blocks and JSON wrappers
+                    responseText = responseText
+                        .replace(/```[a-z]*\n?/gi, "")
+                        .replace(/```/g, "")
+                        .trim();
+                    if (responseText.startsWith("{") && responseText.includes('"abc":')) {
+                        try {
+                            const parsed = JSON.parse(responseText);
+                            responseText = parsed.abc || responseText;
+                        } catch (e) {
+                            // Fallback to substring search if JSON parse fails
+                        }
+                    }
+
+                    const abcStartIndex = responseText.indexOf("X:");
+                    let abcNotation =
+                        abcStartIndex !== -1 ? responseText.substring(abcStartIndex) : responseText;
+
+                    abcNotation = abcNotation.replace(/"|\}/g, "").trim();
+
+                    abcNotation = abcNotation
+                        .replace(/(X:|T:|M:|L:|Q:|K:)/g, "\n$1")
+                        .replace(/\n\s+/g, "\n")
+                        .trim();
+
+                    const lines = abcNotation.split("\n").map(line => line.trim());
+
+                    const formattedNotation = lines
+                        .map(line => {
+                            if (
+                                line.startsWith("X:") ||
+                                line.startsWith("T:") ||
+                                line.startsWith("M:") ||
+                                line.startsWith("L:") ||
+                                line.startsWith("Q:") ||
+                                line.startsWith("K:")
+                            ) {
+                                return line + "\n";
+                            }
+                            return line;
+                        })
+                        .join("");
+
+                    abcNotationSong = formattedNotation;
+
+                    textarea.value = abcNotationSong;
+                })
+                .catch(error => {
+                    textarea.value = "An error occurred: " + error.message;
+                })
+                .finally(() => {
+                    submitButton.disabled = false;
+                });
+        };
+
+        // Update abcNotationSong whenever the textarea content changes
+        textarea.addEventListener("input", function () {
+            abcNotationSong = textarea.value;
+        });
+
+        // Single DOM append — all elements are now in the fragment
+        this.widgetWindow.getWidgetBody().appendChild(fragment);
+    };
+}
+
+/**
+ * Item name the Groq API key is stored under.
+ */
+const GROQ_API_KEY_ITEM = "groq_api_key";
+
+/**
+ * Returns the Groq API key for the current session.
+ * The key is a credential, so it is kept in sessionStorage, which the browser
+ * clears when the tab closes, rather than in the persistent store. A key saved
+ * by an earlier build is copied to sessionStorage and then removed from the old
+ * location; it is only removed once the copy is in place, so a storage failure
+ * cannot lose it.
+ *
+ * @param {Object} activity - the Activity, for the key saved by earlier builds
+ * @returns {String} - the API key, or an empty string when none is set
+ */
+function getGroqApiKey(activity) {
+    let stored = "";
+    try {
+        stored = sessionStorage.getItem(GROQ_API_KEY_ITEM) || "";
+    } catch (e) {
+        console.warn("Could not read the Groq API key from session storage:", e);
+    }
+
+    const legacy = activity.storage ? activity.storage[GROQ_API_KEY_ITEM] : null;
+    if (!legacy) {
+        return stored;
+    }
+
+    // The copy is already there, or it was just stored for this session.
+    if (stored || setGroqApiKey(legacy)) {
+        try {
+            delete activity.storage[GROQ_API_KEY_ITEM];
+        } catch (e) {
+            console.warn("Could not remove the stored Groq API key:", e);
+        }
+    }
+
+    return stored || legacy;
+}
+
+/**
+ * Saves the Groq API key for the current session.
+ *
+ * @param {String} key - the API key
+ * @returns {Boolean} - whether the key was stored for this session
+ */
+function setGroqApiKey(key) {
+    try {
+        sessionStorage.setItem(GROQ_API_KEY_ITEM, key);
+        return true;
+    } catch (e) {
+        console.warn("Could not save the Groq API key for this session:", e);
+        return false;
+    }
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+        AIWidget,
+        getGroqApiKey,
+        setGroqApiKey
+    };
+}

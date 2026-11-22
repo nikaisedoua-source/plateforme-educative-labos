@@ -1,0 +1,7 @@
+node_modules/
+lib/
+dist/
+build/
+usermanual/MusicBlocksUserManual-GSoC-2017/
+*.min.js
+*.svg

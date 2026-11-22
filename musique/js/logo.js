@@ -1,0 +1,3206 @@
+// Copyright (c) 2014-2021 Walter Bender
+// Copyright (c) 2015 Yash Khandelwal
+// Copyright (c) 2020 Anindya Kundu
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/*
+   global
+
+   Notation, Synth, instruments, instrumentsFilters,
+   instrumentsEffects, Singer, Tone, CAMERAVALUE, 
+   VIDEOVALUE, last, getIntervalDirection, getIntervalNumber,
+   mixedNumber, rationalToFraction, StatusMatrix,
+   getStatsFromNotation, delayExecution, DEFAULTVOICE, performanceTracker,
+   requirejs, define, DEFAULTVOLUME, PREVIEWVOLUME, DEFAULTDELAY,
+   OSCVOLUMEADJUSTMENT, TONEBPM, TARGETBPM, TURTLESTEP, NOTEDIV,
+   MIN_HIGHLIGHT_DURATION_MS,
+   NOMICERRORMSG, NANERRORMSG, NOSTRINGERRORMSG, NOBOXERRORMSG,
+   NOACTIONERRORMSG, NOINPUTERRORMSG, NOSQRTERRORMSG, ZERODIVIDEERRORMSG,
+   EMPTYHEAPERRORMSG, INVALIDPITCH, POSNUMBER, NOTATIONNOTE, NOTATIONDURATION,
+   NOTATIONDOTCOUNT, NOTATIONTUPLETVALUE, NOTATIONROUNDDOWN,
+   NOTATIONINSIDECHORD, NOTATIONSTACCATO, ManagedTimer,
+   EmbeddedGraphicsScheduler, KokoroSpeech
+ */
+
+/*
+   exported
+
+   Queue, Logo, LogoDependencies
+ */
+
+// Constants moved to js/logoconstants.js to resolve circular dependency
+
+/**
+ * Resolves the performance instrumentation module.
+ *
+ * `performanceTracker` is loaded on demand (see `runLogoCommands`), so it is
+ * absent for the whole of a normal run. Every instrumentation call site goes
+ * through this accessor rather than repeating the `typeof` guard.
+ *
+ * @returns {Object|null} The tracker, or null when it has not been loaded.
+ */
+const getPerformanceTracker = () =>
+    typeof performanceTracker === "undefined" ? null : performanceTracker;
+
+/**
+ * Whether performance profiling was asked for in the URL.
+ *
+ * Parses the query string rather than searching it for a substring, so that
+ * `?noperformance=true`, `?x=performance=true` and `?performance=truex` are not
+ * mistaken for `?performance=true`. `URLSearchParams` is guarded because it is
+ * absent in very old browsers, where the answer should be "not asked for"
+ * rather than a thrown error inside runLogoCommands.
+ *
+ * @returns {boolean}
+ */
+const _performanceRequestedInURL = () => {
+    if (typeof window === "undefined" || !window.location || !window.location.search) {
+        return false;
+    }
+    try {
+        return new URLSearchParams(window.location.search).get("performance") === "true";
+    } catch (e) {
+        return false;
+    }
+};
+
+/**
+ * Most barlines one note is split at when writing notation. Splitting takes one
+ * step per measure, so without a limit a tiny meter makes millions of tied
+ * pieces, and a small enough measure never finishes. Saving as ABC slows down
+ * sharply with more tied pieces, so the limit is kept low.
+ */
+const MAX_NOTATION_BARLINES = 1000;
+
+/**
+ * @class
+ * @classdesc Queue entry for managing running blocks.
+ */
+class Queue {
+    /**
+     * @constructor
+     * @param blk - block
+     * @param count - count
+     * @param parentBlk - parent block
+     * @param args - arguments
+     */
+    constructor(blk, count, parentBlk, args) {
+        this.blk = blk;
+        this.count = count;
+        this.parentBlk = parentBlk;
+        this.args = args;
+    }
+
+    /**
+     * Obtains a Queue instance from the object pool or allocates a new one.
+     * Minimizes heap allocations and GC pressure in tight execution loops.
+     *
+     * @param {*} blk - block
+     * @param {number} count - count
+     * @param {*} parentBlk - parent block
+     * @param {*} args - arguments
+     * @returns {Queue}
+     */
+    static obtain(blk, count, parentBlk, args) {
+        if (Queue._pool.length > 0) {
+            const item = Queue._pool.pop();
+            item.blk = blk;
+            item.count = count;
+            item.parentBlk = parentBlk;
+            item.args = args;
+            return item;
+        }
+        return new Queue(blk, count, parentBlk, args);
+    }
+
+    /**
+     * Recycles a Queue instance into the pool for reuse.
+     *
+     * @param {Queue} item
+     */
+    static recycle(item) {
+        if (item && item instanceof Queue && Queue._pool.length < 512) {
+            item.args = null;
+            Queue._pool.push(item);
+        }
+    }
+}
+
+Queue._pool = [];
+
+/**
+ * @classdesc Logo owns global execution, scheduling, widget and session context, notation and
+ * export, synth and transport, camera and shared resources, and orchestration state.
+ */
+class Logo {
+    /**
+     * @constructor
+     * @param {Object|LogoDependencies} activityOrDeps - Either a LogoDependencies object
+     *     (preferred) or a legacy Activity object. When an Activity is passed it is
+     *     converted automatically via {@link LogoDependencies.fromActivity}.
+     *
+     * @example
+     * // Activity pattern (backward-compatible)
+     * const logo = new Logo(activity);
+     *
+     * @example
+     * // Explicit dependency pattern
+     * const deps = LogoDependencies.fromActivity(activity);
+     * const logo = new Logo(deps);
+     */
+    constructor(activityOrDeps) {
+        // `errorHandler` is the single property that distinguishes a
+        // LogoDependencies container from a legacy Activity object (which uses
+        // `errorMsg` instead). instanceof is checked first as the strongest
+        // signal; the typeof clause is a fallback for plain objects that satisfy
+        // the shape but are not formal instances (e.g. after jest.resetModules()
+        // clears module identity). When the project migrates to ES modules the
+        // require fallback and typeof clause can be removed.
+        const LD =
+            typeof LogoDependencies !== "undefined"
+                ? LogoDependencies
+                : require("./LogoDependencies");
+        const isExplicitDeps =
+            activityOrDeps instanceof LD ||
+            (activityOrDeps !== null &&
+                activityOrDeps !== undefined &&
+                typeof activityOrDeps.errorHandler === "function");
+
+        if (isExplicitDeps) {
+            // Explicit dependency container: use directly and build a
+            // compatibility facade so callers that expect an activity object
+            // still work (Notation constructor, plugins, getStatsFromNotation).
+
+            this.deps = activityOrDeps;
+            const deps = this.deps;
+            this.activity = {
+                blocks: deps.blocks,
+                turtles: deps.turtles,
+                stage: deps.stage,
+                errorMsg: (msg, blk) => deps.errorHandler(msg, blk),
+                hideMsgs: () => deps.messageHandler.hide(),
+                saveLocally: () => deps.storage.saveLocally(),
+                get showBlocksAfterRun() {
+                    return deps.config.showBlocksAfterRun;
+                },
+                set showBlocksAfterRun(value) {
+                    deps.config.showBlocksAfterRun = value;
+                },
+                onStopTurtle: deps.callbacks.onStopTurtle,
+                onRunTurtle: deps.callbacks.onRunTurtle,
+                refreshCanvas: () => deps.refreshCanvas(),
+                textMsg: msg => deps.textMsg(msg),
+                save: deps.save,
+                statsWindow: deps.statsWindow,
+                logo: this
+            };
+        } else {
+            // Activity pattern: preserve the original reference for backward
+            // compatibility and derive deps through the factory.
+            this.activity = activityOrDeps;
+            const LD =
+                typeof LogoDependencies !== "undefined"
+                    ? LogoDependencies
+                    : require("./LogoDependencies");
+            this.deps = LD.fromActivity(activityOrDeps);
+        }
+
+        // Bind commonly-used dependencies locally for readability
+        this.blocks = this.deps.blocks;
+        this.turtles = this.deps.turtles;
+        this.stage = this.deps.stage;
+
+        this.blockList = this.blocks.blockList;
+        this._onStopTurtle = this.deps.callbacks.onStopTurtle;
+        this._onRunTurtle = this.deps.callbacks.onRunTurtle;
+
+        // Widgets
+        this.reflection = null;
+        this.phraseMaker = null;
+        this.legoWidget = null;
+        this.pitchDrumMatrix = null;
+        this.arpeggio = null;
+        this.rhythmRuler = null;
+        this.timbre = null;
+        this.pitchStaircase = null;
+        this.temperament = null;
+        this.tempo = null;
+        this.pitchSlider = null;
+        this.musicKeyboard = null;
+        this.modeWidget = null;
+        this.Oscilloscope = null;
+        this.oscilloscopeTurtles = [];
+        this.meterWidget = null;
+        this.statusMatrix = null;
+        this.legobricks = null;
+        this.sample = null;
+        this.aiMusic = null;
+        this.aiDebugger = null;
+
+        this.evalFlowDict = {};
+        this.evalArgDict = {};
+        this.evalParameterDict = {};
+        this.evalSetterDict = {};
+        this.evalOnStartList = {};
+        this.evalOnStopList = {};
+        this.pluginVars = {};
+        this.pluginReturnValue = null;
+
+        this.eventList = {};
+        this.receivedArg = null;
+
+        this.inputValues = {};
+        this.boxes = {};
+        this.actions = {};
+        this.returns = {};
+        this.turtleHeaps = {};
+        this.turtleDicts = {};
+
+        // We store each case arg and flow by switch block no. and turtle
+        this.switchCases = {};
+        this.switchBlocks = {};
+
+        // Related to running programs
+        this._lastNoteTimeout = null;
+        this._valueBarTimeout = null;
+        this._alreadyRunning = false;
+        this._prematureRestart = false;
+        this._runningBlock = null;
+        this._ignoringBlock = null;
+        this._currentlyHighlightedBlock = null;
+
+        this.time = 0;
+        this.firstNoteTime = null;
+        this.firstNoteAudioTime = null;
+        this._turtleDelay = 0;
+        this.sounds = [];
+        this.cameraID = null;
+        this.stopTurtle = false;
+        // Changes whenever a run starts or stops, so late callbacks can tell their run is over.
+        this.runGeneration = 0;
+        this.lastKeyCode = null;
+        this.setCameraID = this.setCameraID.bind(this);
+
+        // Widget-related attributes
+        this.showPitchDrumMatrix = false;
+        this.inPitchDrumMatrix = false;
+        this.inRhythmRuler = false;
+        this.rhythmRulerMeasure = null;
+        this.inPitchStaircase = false;
+        this.inTempo = false;
+        this.inPitchSlider = false;
+        this.inMusicKeyboard = false;
+        this._currentDrumBlock = null;
+        this.inTimbre = false;
+        this.inSample = false;
+        this.inReflectionMatrix = false;
+        this.inArpeggio = false;
+        this.insideModeWidget = false;
+        this.insideMeterWidget = false;
+        this.insideTemperament = false;
+
+        // pitch-rhythm matrix
+        this.inMatrix = false;
+        this.inLegoWidget = false;
+        this.tupletRhythms = {};
+        this.addingNotesToTuplet = {};
+        this.drumBlocks = [];
+        this.pitchBlocks = [];
+
+        // Parameters used by duplicate block
+        this.connectionStore = {};
+        this.connectionStoreLock = false;
+
+        // tuplet
+        this.tuplet = {};
+        this.tupletParams = {};
+
+        // object that deals with notations
+        this._notation = new this.deps.classes.Notation(this.activity);
+
+        // parameters used by notations
+        this.notationOutput = "";
+        this.notationNotes = {};
+        this.MIDIOutput = "";
+        this.guitarOutputHead = "";
+        this.guitarOutputEnd = "";
+        this.runningLilypond = false;
+        this.collectingStats = false;
+        this.runningAbc = false;
+        this.runningMxml = false;
+        this.runningMIDI = false;
+        this._checkingCompletionState = false;
+        this._exportNotationFinished = false;
+        this.recording = false;
+
+        // Buffer for recording musical output (Issue #2330)
+        // This allows saving Lilypond/ABC notation from interactive sessions
+        this.recordingBuffer = {
+            hasData: false,
+            notationOutput: "",
+            notationNotes: {},
+            notationStaging: {},
+            notationDrumStaging: {}
+        };
+
+        this.temperamentSelected = [];
+        this._userTemperament = "equal";
+        this.customTemperamentDefined = false;
+        this.specialArgs = [];
+
+        // Load the default synthesizer
+        this.synth = new this.deps.classes.Synth();
+        this.synth.activity = this.activity; // Reference for voice tracking
+        this.synth.changeInTemperament = false;
+        this._synthsInitialized = false;
+
+        // Persistent user-selected temperament (survives across runs).
+        this._userTemperament = null;
+
+        // Mode widget
+        this.modeBlock = null;
+
+        // Meter widget
+        this._meterBlock = null;
+
+        // Status matrix
+        this.inStatusMatrix = false;
+        this.inOscilloscope = false;
+        this.updatingStatusMatrix = false;
+        this.statusFields = [];
+
+        // Midi Data
+        this._midiData = {};
+
+        this._syncCounter = 0;
+        this._YIELD_AFTER_SYNC_RUNS = 1000;
+        this._EXPORT_YIELD_AFTER_SYNC_RUNS = 100; // Sync yield threshold during exports.
+        this._MAX_ITERATIONS = 1000000;
+        this._iterationBudget = this._MAX_ITERATIONS + 1;
+
+        // When running in step-by-step mode, the next command to run
+        // is queued here.
+        this.stepQueue = {};
+        this._unhighlightStepQueue = {};
+
+        this.svgOutput = "";
+        this.svgBackground = true;
+
+        this.mic = null;
+        this.volumeAnalyser = null;
+        this.pitchAnalyser = null;
+
+        // Centralized timer management for zombie-timer prevention.
+        // All setTimeout/setInterval calls in the execution engine are routed
+        // through this manager, allowing doStopTurtles() to cancel every
+        // pending timer in one sweep. This fixes ghost turtle movements,
+        // phantom sounds, and stale block highlighting that occur when the
+        // user presses Stop while animations are in-flight.
+        if (typeof ManagedTimer !== "undefined") {
+            this._timerManager = new ManagedTimer();
+        } else {
+            // Node.js / Jest environment — require the module
+            try {
+                const ManagedTimerCtor = require("./utils/ManagedTimer");
+                this._timerManager = new ManagedTimerCtor();
+            } catch (e) {
+                // Fallback: create a minimal shim so the engine still works
+                this._timerManager = {
+                    _activeTimers: new Set(),
+                    _activeIntervals: new Set(),
+                    totalCreated: 0,
+                    totalCancelled: 0,
+                    totalFired: 0,
+                    totalSuppressed: 0,
+                    get activeCount() {
+                        return this._activeTimers.size + this._activeIntervals.size;
+                    },
+                    setTimeout(cb, delay) {
+                        return setTimeout(cb, delay);
+                    },
+                    setGuardedTimeout(cb, delay, guard) {
+                        return setTimeout(() => {
+                            if (!guard()) cb();
+                        }, delay);
+                    },
+                    clearAll() {
+                        return 0;
+                    },
+                    getStats() {
+                        return {
+                            active: 0,
+                            created: 0,
+                            cancelled: 0,
+                            fired: 0,
+                            suppressed: 0
+                        };
+                    }
+                };
+            }
+        }
+        if (this.synth) {
+            this.synth._timerManager = this._timerManager;
+        }
+
+        this._graphicsScheduler = new EmbeddedGraphicsScheduler(this);
+    }
+
+    // ========= Setters, Getters =================================================================
+
+    /**
+     * @param {Function} onStopTurtle
+     */
+    set onStopTurtle(onStopTurtle) {
+        this._onStopTurtle = onStopTurtle;
+    }
+
+    /**
+     * @returns {Function}
+     */
+    get onStopTurtle() {
+        return this._onStopTurtle;
+    }
+
+    /**
+     * @param {Function} onRunTurtle
+     */
+    set onRunTurtle(onRunTurtle) {
+        this._onRunTurtle = onRunTurtle;
+    }
+
+    /**
+     * @returns {Function}
+     */
+    get onRunTurtle() {
+        return this._onRunTurtle;
+    }
+
+    /**
+     * @param {Number} turtleDelay - pause between each block as the program executes
+     */
+    set turtleDelay(turtleDelay) {
+        this._turtleDelay = turtleDelay;
+    }
+
+    /**
+     * @returns {Number} pause between each block as the program executes
+     */
+    get turtleDelay() {
+        return this._turtleDelay;
+    }
+
+    /**
+     * @returns {Object} object of Notation
+     */
+    get notation() {
+        return this._notation;
+    }
+
+    /**
+     * Access the managed timer instance for diagnostics or external cancellation.
+     * @returns {ManagedTimer} The timer manager used by the execution engine.
+     */
+    get timerManager() {
+        return this._timerManager;
+    }
+
+    // ========= Utilities ========================================================================
+
+    /**
+     * Restores any broken connections made in duplicate notes clamps.
+     *
+     * @returns {void}
+     */
+    _restoreConnections() {
+        for (const turtle in this.connectionStore) {
+            for (const blk in this.connectionStore[turtle]) {
+                const n = this.connectionStore[turtle][blk].length;
+                for (let i = 0; i < n; i++) {
+                    const obj = this.connectionStore[turtle][blk].pop();
+                    this.blockList[obj[0]].connections[obj[1]] = obj[2];
+                    // eslint-disable-next-line eqeqeq
+                    if (obj[2] != null) {
+                        this.blockList[obj[2]].connections[0] = obj[0];
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Gets the connections of the blocks a duplicate notes clamp has broken,
+     * as _restoreConnections() will leave them, without restoring them.
+     *
+     * @returns {Map<number, Array>} block index -> connections
+     */
+    getRestoredConnections() {
+        const restored = new Map();
+        const connectionsOf = blk => {
+            if (!restored.has(blk)) restored.set(blk, [...this.blockList[blk].connections]);
+            return restored.get(blk);
+        };
+
+        for (const turtle in this.connectionStore) {
+            for (const blk in this.connectionStore[turtle]) {
+                for (const [child, c, next] of this.connectionStore[turtle][blk]) {
+                    connectionsOf(child)[c] = next;
+                    if (next !== null && next !== undefined) connectionsOf(next)[0] = child;
+                }
+            }
+        }
+
+        return restored;
+    }
+
+    /**
+     * Preps synths for each turtle.
+     *
+     * @returns {void}
+     */
+    prepSynths() {
+        if (this._synthsInitialized) {
+            // Ensure any newly added turtles (e.g., companion turtles) are
+            // initialized without disrupting existing turtles' runtime state.
+            for (const turtle of Object.keys(this.turtles.turtleList)) {
+                if (turtle in this.deps.instruments) {
+                    continue;
+                }
+
+                const tur = this.turtles.ithTurtle(turtle);
+                this.deps.instruments[turtle] = {};
+                this.deps.instrumentsFilters[turtle] = {};
+                this.deps.instrumentsEffects[turtle] = {};
+
+                if (!(DEFAULTVOICE in this.deps.instruments[turtle])) {
+                    this.synth.createDefaultSynth(turtle);
+                }
+
+                for (const instrumentName in this.deps.instruments[0]) {
+                    if (!(instrumentName in this.deps.instruments[turtle])) {
+                        this.synth.loadSynth(turtle, instrumentName);
+
+                        if (instrumentName in this.deps.instrumentsFilters[0]) {
+                            this.deps.instrumentsFilters[turtle][instrumentName] =
+                                this.deps.instrumentsFilters[0][instrumentName];
+                        }
+
+                        if (instrumentName in this.deps.instrumentsEffects[0]) {
+                            this.deps.instrumentsEffects[turtle][instrumentName] =
+                                this.deps.instrumentsEffects[0][instrumentName];
+                        }
+                    }
+                }
+
+                const currentMasterVolume =
+                    typeof Singer !== "undefined" &&
+                    Singer.masterVolume &&
+                    Singer.masterVolume.length > 0
+                        ? last(Singer.masterVolume)
+                        : DEFAULTVOLUME;
+
+                tur.singer.synthVolume = {
+                    "electronic synth": [currentMasterVolume],
+                    "noise1": [currentMasterVolume],
+                    "noise2": [currentMasterVolume],
+                    "noise3": [currentMasterVolume]
+                };
+                tur.singer.synthVolume[DEFAULTVOICE] = [currentMasterVolume];
+
+                for (const synth in tur.singer.synthVolume) {
+                    this.deps.Singer.setSynthVolume(this, turtle, synth, currentMasterVolume);
+                }
+            }
+            return;
+        }
+        this.synth.newTone();
+
+        for (const turtle of Object.keys(this.turtles.turtleList)) {
+            const tur = this.turtles.ithTurtle(turtle);
+
+            if (!(turtle in this.deps.instruments)) {
+                this.deps.instruments[turtle] = {};
+                this.deps.instrumentsFilters[turtle] = {};
+                this.deps.instrumentsEffects[turtle] = {};
+            }
+
+            // Make sure there is a default synth for each turtle
+            if (!(DEFAULTVOICE in this.deps.instruments[turtle])) {
+                this.synth.createDefaultSynth(turtle);
+            }
+
+            // Copy any preloaded synths from the default turtle
+            for (const instrumentName in this.deps.instruments[0]) {
+                if (!(instrumentName in this.deps.instruments[turtle])) {
+                    this.synth.loadSynth(turtle, instrumentName);
+
+                    // Copy any filters
+                    if (instrumentName in this.deps.instrumentsFilters[0]) {
+                        this.deps.instrumentsFilters[turtle][instrumentName] =
+                            this.deps.instrumentsFilters[0][instrumentName];
+                    }
+
+                    // ...and any effects
+                    if (instrumentName in this.deps.instrumentsEffects[0]) {
+                        this.deps.instrumentsEffects[turtle][instrumentName] =
+                            this.deps.instrumentsEffects[0][instrumentName];
+                    }
+                }
+            }
+
+            tur.singer.synthVolume = {
+                "electronic synth": [DEFAULTVOLUME],
+                "noise1": [DEFAULTVOLUME],
+                "noise2": [DEFAULTVOLUME],
+                "noise3": [DEFAULTVOLUME]
+            };
+            tur.singer.synthVolume[DEFAULTVOICE] = [DEFAULTVOLUME];
+        }
+
+        for (const turtle of Object.keys(this.turtles.turtleList)) {
+            // Cache ithTurtle result to avoid redundant function calls in inner loop
+            const tur = this.turtles.ithTurtle(turtle);
+            for (const synth in tur.singer.synthVolume) {
+                this.deps.Singer.setSynthVolume(this, turtle, synth, DEFAULTVOLUME);
+            }
+        }
+        this._synthsInitialized = true;
+    }
+
+    /**
+     * Initialises and starts a default synth.
+     *
+     * @param turtle
+     * @returns {void}
+     */
+    resetSynth(turtle) {
+        if (!(DEFAULTVOICE in this.deps.instruments[turtle])) {
+            this.synth.createDefaultSynth(turtle);
+        }
+
+        this.deps.Singer.resetMasterVolume(this);
+        for (const t of Object.keys(this.turtles.turtleList)) {
+            // Cache ithTurtle result to avoid redundant function calls in inner loop
+            const tur = this.turtles.ithTurtle(t);
+            for (const synth in tur.singer.synthVolume) {
+                this.deps.Singer.setSynthVolume(this, t, synth, DEFAULTVOLUME);
+            }
+        }
+
+        this.synth.start();
+    }
+
+    /**
+     * Initialises the microphone.
+     *
+     * @returns {void}
+     */
+    initMediaDevices() {
+        if (this.mic && typeof this.mic.close === "function") {
+            this.mic.close();
+        }
+
+        let mic = new this.deps.Tone.UserMedia();
+        try {
+            mic.open();
+        } catch (e) {
+            this.deps.errorHandler(NOMICERRORMSG);
+            mic = null;
+        }
+
+        this.mic = mic;
+        this.limit = 16384;
+    }
+
+    /**
+     * Clears note params.
+     *
+     * @param {Object} turtle - Turtle object
+     * @param blk
+     * @param drums
+     * @returns {void}
+     */
+    clearNoteParams(turtle, blk, drums) {
+        turtle.singer.oscList[blk] = [];
+        turtle.singer.noteBeat[blk] = [];
+        turtle.singer.noteBeatValues[blk] = [];
+        turtle.singer.noteValue[blk] = null;
+        turtle.singer.notePitches[blk] = [];
+        turtle.singer.noteOctaves[blk] = [];
+        turtle.singer.noteCents[blk] = [];
+        turtle.singer.noteHertz[blk] = [];
+        turtle.singer.embeddedGraphics[blk] = [];
+        turtle.singer.noteDrums[blk] = drums !== null ? drums : [];
+    }
+
+    /**
+     * Speaks the given text aloud.
+     *
+     * Two engines are available. The Web Speech API is the default because it
+     * costs nothing: it is already in the browser, it works offline, and it
+     * starts talking immediately. Kokoro is a neural voice that sounds much
+     * more human, but it has to fetch about 92 MB of weights the first time it
+     * runs, so it is opt-in rather than the default. See js/kokoro-speech.js.
+     *
+     * @param {string} text
+     * @returns {void}
+     */
+    processSpeak(text) {
+        // The Speak block used to run on meSpeak, a JavaScript port of espeak
+        // that was bundled with the app. It was heavy, it sounded robotic, and
+        // it was eventually dropped, which left the block doing nothing at all.
+
+        const phrase = text === null || text === undefined ? "" : String(text);
+        if (phrase.trim() === "") {
+            return;
+        }
+
+        const kokoro = this._kokoroIfEnabled();
+        if (kokoro !== null) {
+            kokoro.speak(phrase);
+            return;
+        }
+
+        this._speakWithWebSpeech(phrase);
+    }
+
+    /**
+     * Silences anything the Speak block still has queued, whichever engine is
+     * doing the talking.
+     *
+     * Called when a run starts and when Stop is pressed, so speech left over
+     * from a previous run never bleeds into the next one.
+     *
+     * @returns {void}
+     */
+    _cancelSpeech() {
+        if (this._kokoroSpeech) {
+            this._kokoroSpeech.cancel();
+        }
+        if (typeof window !== "undefined" && window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+        }
+    }
+
+    /**
+     * The Kokoro engine, but only if the user has asked for it.
+     *
+     * Turned on for the current page with "?kokoro=true", or persistently by
+     * setting "kokoroSpeech" to "on" in localStorage. The URL flag does not
+     * change localStorage. Building the engine is cheap and downloads nothing;
+     * the weights are only fetched once something is actually spoken.
+     *
+     * @returns {KokoroSpeech|null} null when it is switched off or unavailable
+     */
+    _kokoroIfEnabled() {
+        let enabled = false;
+        try {
+            if (
+                typeof URLSearchParams !== "undefined" &&
+                typeof window !== "undefined" &&
+                window.location &&
+                window.location.search
+            ) {
+                enabled = new URLSearchParams(window.location.search).get("kokoro") === "true";
+            }
+
+            if (!enabled) {
+                enabled =
+                    typeof localStorage !== "undefined" &&
+                    localStorage.getItem("kokoroSpeech") === "on";
+            }
+        } catch (e) {
+            // Storage can be blocked outright in a locked-down profile.
+            return null;
+        }
+        if (!enabled) {
+            return null;
+        }
+
+        if (!this._kokoroSpeech) {
+            const Speech =
+                typeof KokoroSpeech !== "undefined"
+                    ? KokoroSpeech
+                    : typeof window !== "undefined" && window.KokoroSpeech;
+            if (!Speech) {
+                return null;
+            }
+            this._kokoroSpeech = new Speech({
+                onProgress: progress => this._showKokoroProgress(progress)
+            });
+        }
+        return this._kokoroSpeech;
+    }
+
+    /**
+     * Shows Kokoro model-loading progress through Music Blocks' existing popup.
+     *
+     * @param {object} progress - Transformers.js progress information
+     * @returns {void}
+     */
+    _showKokoroProgress(progress) {
+        if (!progress || typeof progress.progress !== "number") {
+            return;
+        }
+
+        const percent = Math.max(0, Math.min(100, Math.round(progress.progress)));
+        this.deps.textMsg(_("Downloading Kokoro voice: %s").replace(/%s/g, `${percent}%`));
+    }
+
+    /**
+     * Speaks a phrase with the browser's built-in synthesizer.
+     *
+     * @param {string} phrase
+     * @returns {void}
+     */
+    _speakWithWebSpeech(phrase) {
+        // Bail quietly if we're somewhere without the API (an older browser, a
+        // test runner, a server-side render). Speaking is a nice-to-have, so a
+        // missing synthesizer should never throw and take a running project down.
+        if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+            return;
+        }
+
+        const synth = window.speechSynthesis;
+
+        // Nothing is cancelled here on purpose. The synthesizer keeps its own
+        // queue, so two Speak blocks one after another are read one after the
+        // other instead of the second cutting the first off mid-word. Leftover
+        // speech from an earlier run is cleared by _cancelSpeech() when the next
+        // run starts or when Stop is pressed.
+        const utterance = new SpeechSynthesisUtterance(phrase);
+
+        // Try to pronounce the words in the child's own language rather than
+        // reading them as if they were English. We look for a voice that
+        // matches the current locale and quietly fall back to the browser
+        // default if there isn't one.
+        const preferredLang = navigator.language || "en-US";
+        const voice = this._pickSpeechVoice(synth, preferredLang);
+        if (voice) {
+            utterance.voice = voice;
+            utterance.lang = voice.lang;
+        } else {
+            utterance.lang = preferredLang;
+        }
+
+        // Calm, clear defaults that read well for kids: normal speed, natural
+        // pitch, full volume.
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+
+        utterance.onerror = event => {
+            // "interrupted" and "canceled" are what a Stop or a fresh Run looks
+            // like from in here, so they aren't worth surfacing.
+            if (event.error === "interrupted" || event.error === "canceled") {
+                return;
+            }
+            console.warn(`Speak block: speech synthesis failed (${event.error}).`);
+        };
+
+        synth.speak(utterance);
+    }
+
+    /**
+     * Picks the best available speech-synthesis voice for a language.
+     *
+     * @param {SpeechSynthesis} synth - the window.speechSynthesis instance
+     * @param {string} preferredLang - a BCP-47 tag like "hi-IN" or "es"
+     * @returns {SpeechSynthesisVoice|null} the best match, or null to let the
+     *     browser choose its own default
+     */
+    _pickSpeechVoice(synth, preferredLang) {
+        // getVoices() is famously empty on the very first call in some browsers:
+        // Chrome loads the list asynchronously and fires 'voiceschanged' a beat
+        // later. By the time a child actually presses Run the list has almost
+        // always populated. If it hasn't yet, returning null just lets the
+        // browser pick its own default, which is still perfectly fine.
+        const voices = synth.getVoices();
+        if (!voices || voices.length === 0) {
+            return null;
+        }
+
+        const wanted = preferredLang.toLowerCase();
+        const base = wanted.split("-")[0];
+
+        // Prefer an exact locale match ("hi-IN"), then any voice for the same
+        // language ("hi-*"), and otherwise let the browser decide.
+        return (
+            voices.find(v => v.lang && v.lang.toLowerCase() === wanted) ||
+            voices.find(v => v.lang && v.lang.toLowerCase().split("-")[0] === base) ||
+            null
+        );
+    }
+
+    /**
+     * Shows information: with camera, in image form, at URL, as text.
+     *
+     * @param turtle
+     * @param blk
+     * @param arg0
+     * @param arg1
+     * @returns {void}
+     */
+    processShow(turtle, blk, arg0, arg1) {
+        const requiredTurtle = this.turtles.getTurtle(turtle);
+        if (typeof arg1 === "string") {
+            const len = arg1.length;
+            if (len === 14 && arg1.slice(0, 14) === CAMERAVALUE) {
+                if (this.deps.utils.doUseCamera) {
+                    this.deps.utils.doUseCamera(
+                        [arg0],
+                        this.turtles,
+                        turtle,
+                        false,
+                        this.cameraID,
+                        this.setCameraID,
+                        (msg, blk) => this.deps.errorHandler(msg, blk)
+                    );
+                }
+            } else if (len === 13 && arg1.slice(0, 13) === VIDEOVALUE) {
+                if (this.deps.utils.doUseCamera) {
+                    this.deps.utils.doUseCamera(
+                        [arg0],
+                        this.turtles,
+                        turtle,
+                        true,
+                        this.cameraID,
+                        this.setCameraID,
+                        (msg, blk) => this.deps.errorHandler(msg, blk)
+                    );
+                }
+            } else if (len > 10 && arg1.slice(0, 10) === "data:image") {
+                requiredTurtle.doShowImage(arg0, arg1);
+            } else if (len > 8 && arg1.slice(0, 8) === "https://") {
+                requiredTurtle.doShowURL(arg0, arg1);
+            } else if (len > 7 && arg1.slice(0, 7) === "http://") {
+                requiredTurtle.doShowURL(arg0, arg1);
+            } else if (len > 7 && arg1.slice(0, 7) === "file://") {
+                requiredTurtle.doShowURL(arg0, arg1);
+            } else {
+                requiredTurtle.doShowText(arg0, arg1);
+            }
+        } else if (
+            typeof arg1 === "object" &&
+            blk !== null &&
+            this.blockList[this.blockList[blk].connections[2]].name === "loadFile"
+        ) {
+            if (arg1) {
+                requiredTurtle.doShowText(arg0, arg1[1]);
+            } else {
+                this.deps.errorHandler(_("You must select a file."));
+            }
+        } else {
+            requiredTurtle.doShowText(arg0, arg1);
+        }
+    }
+
+    // ========================================================================
+
+    /**
+     * Sets the cameraID property.
+     *
+     * @param id
+     * @returns {void}
+     */
+    setCameraID(id) {
+        this.cameraID = id;
+    }
+
+    // ========= Action ===========================================================================
+
+    /**
+     * Sets a named listener after removing any existing listener in the same place.
+     *
+     * @param {Number} turtle - Turtle index in turtles.turtleList
+     * @param {String} listenerName
+     * @param {Function} listener
+     * @param {boolean} persistent - when true, clearTurtleListeners() leaves this
+     *  listener attached on stop/completion (e.g. a Listen block's click handler
+     *  is meant to keep firing after the run that registered it has ended).
+     * @returns {void}
+     */
+    setTurtleListener(turtle, listenerName, listener, persistent = false) {
+        const tur = this.turtles.ithTurtle(turtle);
+        if (listenerName in tur.listeners) {
+            this.stage.removeEventListener(listenerName, tur.listeners[listenerName], false);
+        }
+
+        listener.persistent = persistent;
+        tur.listeners[listenerName] = listener;
+        this.stage.addEventListener(listenerName, listener, false);
+    }
+
+    /**
+     * Removes active event listeners from all turtles and clears listener objects.
+     *
+     * @param {boolean} preservePersistent - when true, listeners registered as
+     *  persistent (see setTurtleListener) are left attached instead of removed.
+     * @returns {void}
+     */
+    clearTurtleListeners(preservePersistent = false) {
+        for (const turtle of this.turtles.turtleList) {
+            if (turtle && turtle.listeners) {
+                for (const listenerName in turtle.listeners) {
+                    const listener = turtle.listeners[listenerName];
+                    if (preservePersistent && listener && listener.persistent) {
+                        continue;
+                    }
+                    this.stage.removeEventListener(listenerName, listener, false);
+                    delete turtle.listeners[listenerName];
+                }
+            }
+        }
+    }
+
+    /**
+     * Sets a listener to the triggering (dispatch) block (usually the hidden block) for a clamp block.
+     *
+     * @param blk
+     * @param turtle
+     * @param {string} listenerName
+     * @returns {void}
+     */
+    setDispatchBlock(blk, turtle, listenerName) {
+        const tur = this.turtles.ithTurtle(turtle);
+
+        let nextBlock = null;
+        if (!tur.singer.inDuplicate && tur.singer.backward.length > 0) {
+            const c =
+                this.blockList[this.deps.utils.last(tur.singer.backward)].name === "backward"
+                    ? 1
+                    : 2;
+            if (
+                this.blocks.sameGeneration(
+                    this.blockList[this.deps.utils.last(tur.singer.backward)].connections[c],
+                    blk
+                )
+            ) {
+                nextBlock = this.blockList[blk].connections[0];
+            } else {
+                nextBlock = this.deps.utils.last(this.blockList[blk].connections);
+            }
+        } else {
+            nextBlock = this.deps.utils.last(this.blockList[blk].connections);
+        }
+
+        if (nextBlock !== null) {
+            if (nextBlock in tur.endOfClampSignals) {
+                tur.endOfClampSignals[nextBlock].push(listenerName);
+            } else {
+                tur.endOfClampSignals[nextBlock] = [listenerName];
+            }
+        }
+    }
+
+    /**
+     * Dispatches the end-of-clamp signals a finished flow never reached,
+     * except the ones listed by index in butNotThese.
+     *
+     * @param {Object} tur - Turtle object
+     * @returns {void}
+     */
+    dispatchUnissuedSignals(tur) {
+        for (const b in tur.endOfClampSignals) {
+            const signalsLength = tur.endOfClampSignals[b].length;
+            for (let i = 0; i < signalsLength; i++) {
+                // eslint-disable-next-line eqeqeq
+                if (tur.endOfClampSignals[b][i] != null) {
+                    if (
+                        // eslint-disable-next-line eqeqeq
+                        tur.butNotThese[b] == null ||
+                        tur.butNotThese[b].indexOf(i) === -1
+                    ) {
+                        if (!tur.singer.runningFromEvent) {
+                            this.stage.dispatchEvent(tur.endOfClampSignals[b][i]);
+                            tur.endOfClampSignals[b][i] = null;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Evaluates a block connection and returns its resolved value for use by
+     * the calling block.
+     *
+     * Resolution order:
+     *   1. If `proto.arg` is a function, delegate directly (fastest path).
+     *   2. `intervalname` blocks: update direction state and return the interval
+     *      number as a special case.
+     *   3. Value blocks: return `currentBlock.value`.
+     *   4. Output blocks (`anyout`, `numberout`, `textout`, `booleanout`): evaluate
+     *      by name — built-in cases (`dectofrac`, `hue`, `returnValue`) or plugin
+     *      lookup via `evalArgDict`.
+     *   5. All other blocks: return the block index `blk` as a pass-through.
+     *
+     * @param {Logo} logo - The running Logo instance.
+     * @param {number} turtle - Index of the active turtle.
+     * @param {number|null} blk - Index of the block to evaluate. A null value
+     *     triggers a NOINPUT error on `parentBlk`.
+     * @param {number|null} parentBlk - Index of the calling block; used only
+     *     for error reporting when `blk` is null.
+     * @param {*} receivedArg - Argument forwarded from an enclosing `doArg` /
+     *     `namedDoArg` call; passed through to `proto.arg` when applicable.
+     * @returns {*} The resolved value, or the block index `blk` for non-output
+     *     blocks.
+     */
+    parseArg(logo, turtle, blk, parentBlk, receivedArg) {
+        const tur = logo.turtles.ithTurtle(turtle);
+
+        // eslint-disable-next-line eqeqeq
+        if (blk == null) {
+            logo.deps.errorHandler(NOINPUTERRORMSG, parentBlk);
+            return null;
+        }
+
+        const currentBlock = logo.blockList[blk];
+        const proto = currentBlock.protoblock;
+
+        // Retrieve the value of a block
+        if (proto.parameter) {
+            if (!tur.parameterQueue.includes(blk)) {
+                tur.parameterQueue.push(blk);
+            }
+        }
+
+        if (typeof proto.arg === "function") {
+            return (currentBlock.value = proto.arg(logo, turtle, blk, receivedArg));
+        }
+
+        const blockName = currentBlock.name;
+        const utils = logo.deps.utils;
+
+        if (blockName === "intervalname") {
+            if (typeof currentBlock.value === "string") {
+                tur.singer.noteDirection = utils.getIntervalDirection(currentBlock.value);
+                return utils.getIntervalNumber(currentBlock.value);
+            }
+            return 0;
+        }
+
+        if (currentBlock.isValueBlock()) {
+            return currentBlock.value;
+        }
+
+        const firstDockType = proto.dockTypes[0];
+        if (
+            firstDockType === "anyout" ||
+            firstDockType === "numberout" ||
+            firstDockType === "textout" ||
+            firstDockType === "booleanout"
+        ) {
+            switch (blockName) {
+                case "dectofrac":
+                    if (
+                        logo.inStatusMatrix &&
+                        logo.blockList[currentBlock.connections[0]].name === "print"
+                    ) {
+                        logo.statusFields.push([blk, "dectofrac"]);
+                    } else {
+                        const cblk = currentBlock.connections[1];
+                        // eslint-disable-next-line eqeqeq
+                        if (cblk == null) {
+                            logo.deps.errorHandler(NOINPUTERRORMSG, blk);
+                            currentBlock.value = 0;
+                        } else {
+                            const a = logo.parseArg(logo, turtle, cblk, blk, receivedArg);
+                            if (typeof a === "number") {
+                                currentBlock.value = utils.mixedNumber(a);
+                            } else {
+                                logo.deps.errorHandler(NANERRORMSG, blk);
+                                currentBlock.value = 0;
+                            }
+                        }
+                    }
+                    break;
+
+                case "hue":
+                    if (
+                        logo.inStatusMatrix &&
+                        logo.blockList[currentBlock.connections[0]].name === "print"
+                    ) {
+                        logo.statusFields.push([blk, "color"]);
+                    } else {
+                        currentBlock.value = tur.painter.color;
+                    }
+                    break;
+
+                /** @deprecated */
+                case "returnValue":
+                    if (logo.returns[turtle].length > 0) {
+                        currentBlock.value = logo.returns[turtle].pop();
+                    } else {
+                        currentBlock.value = 0;
+                    }
+                    break;
+
+                default:
+                    // Is it a plugin?
+                    if (blockName in logo.evalArgDict) {
+                        this.safePluginExecute(
+                            logo.evalArgDict[blockName],
+                            logo,
+                            turtle,
+                            blk,
+                            parentBlk,
+                            receivedArg,
+                            tur
+                        );
+                    } else {
+                        console.error("I do not know how to " + blockName);
+                    }
+                    break;
+            }
+
+            return currentBlock.value;
+        }
+
+        return blk;
+    }
+
+    /**
+     * Adds a note event to the Lilypond notation buffer, splitting it across
+     * measure boundaries when necessary.
+     *
+     * When the note's duration carries it past the end of the current measure,
+     * the note is split at every barline it crosses: the portion that fits
+     * within the current measure, one full measure for each intermediate
+     * measure, and the remainder in the last measure, joined by ties (rests
+     * are not tied).  A note that would cross more than MAX_NOTATION_BARLINES
+     * barlines is written whole instead.  Recursion stops when
+     * `split` is false, which all recursive calls pass explicitly.
+     *
+     * @param {string[]} note - Pitch names (e.g. `["G4"]`), or `["R"]` for a
+     *     rest.
+     * @param {number} duration - Reciprocal note duration (e.g. 4 for a
+     *     quarter note, 8 for an eighth note).
+     * @param {number} turtle - Index of the active turtle.
+     * @param {boolean} insideChord - Whether this note is part of a chord.
+     * @param {string[]} drum - Drum patch names (may be empty).
+     * @param {boolean} [split=true] - Allow measure-boundary splitting. Pass
+     *     `false` to write the note directly without further splitting.
+     * @returns {void}
+     */
+    updateNotation(note, duration, turtle, insideChord, drum, split) {
+        // Note: At this point, the note of duration "duration" has
+        // already been added to notesPlayed
+
+        // Don't split the note if we are already splitting the note
+        // eslint-disable-next-line eqeqeq
+        if (split == undefined) split = true;
+
+        const tur = this.turtles.ithTurtle(turtle);
+
+        // Check to see if this note straddles a measure boundary
+        const durationTime = 1 / duration;
+        const { timeLeftInMeasure } = this.deps.utils.getMeasurePosition(
+            tur.singer,
+            tur.singer.notesPlayed[0] / tur.singer.notesPlayed[1] - durationTime
+        );
+
+        // measureDuration: the total duration of one full measure.
+        const measureDuration = tur.singer.beatsPerMeasure / tur.singer.noteValuePerBeat;
+
+        // The tolerance keeps float error from pushing a note at the limit over it.
+        if (
+            split &&
+            durationTime > timeLeftInMeasure &&
+            (durationTime - timeLeftInMeasure) / measureDuration - MAX_NOTATION_BARLINES <= 1e-9
+        ) {
+            // Cut the note at every barline it crosses: the portion that fits in
+            // the current measure, one full measure for each measure it spans,
+            // then the remainder that spills into the last measure.
+            const pieces = [timeLeftInMeasure];
+            let overflowTime = durationTime - timeLeftInMeasure;
+            // The tolerance keeps float error from adding a near-empty measure.
+            while (overflowTime - measureDuration > 1e-9) {
+                pieces.push(measureDuration);
+                overflowTime -= measureDuration;
+            }
+            pieces.push(overflowTime);
+
+            const fractions = pieces
+                .map(time => this.deps.utils.rationalToFraction(time))
+                .filter(obj => obj[0] > 0);
+
+            fractions.forEach((obj, i) => {
+                if (i > 0 && note[0] !== "R") {
+                    // Don't tie rests
+                    this.notation.notationInsertTie(turtle);
+                    this.notation.notationDrumStaging[turtle].push("tie");
+                }
+                this.updateNotation(note, obj[1] / obj[0], turtle, insideChord, drum, false);
+            });
+        } else {
+            // .. otherwise proceed as normal
+            this.notation.doUpdateNotation(...arguments);
+        }
+    }
+
+    /**
+     * Records a note event into the per-turtle MIDI buffer for later export.
+     *
+     * @param {string[]} note - Array of pitch names.
+     * @param {string[]|null} drum - Drum patch names. Pass a falsy value for non-drum notes.
+     * @param {number} duration - Note duration in beats.
+     * @param {number} turtle - Index of the active turtle.
+     * @param {number} bpm - Tempo in beats per minute at the time of the note.
+     * @param {string} instrument - Instrument name for the note.
+     * @param {number[]} [meter] - The meter at the time of the note, as
+     *     [beats per measure, note value per beat].
+     * @returns {void}
+     */
+    notationMIDI(note, drum, duration, turtle, bpm, instrument, meter) {
+        if (!this._midiData[turtle]) {
+            this._midiData[turtle] = [];
+        }
+        const drums = drum && drum.length > 0 ? [...drum] : null;
+        this._midiData[turtle].push({ note, duration, bpm, instrument, drum: drums, meter });
+    }
+
+    // ========================================================================
+
+    /**
+     * Clears the delay timeout after a successful input, and runs from
+     * next block.
+     *
+     * @param {Object} turtle
+     * @returns {void}
+     */
+    clearTurtleRun(turtle) {
+        const tur = this.turtles.ithTurtle(turtle);
+
+        if (tur.delayTimeout !== null) {
+            this._timerManager.clearTimeout(tur.delayTimeout);
+            tur.delayTimeout = null;
+            this.runFromBlockNow(
+                this,
+                turtle,
+                tur.delayParameters["blk"],
+                tur.delayParameters["flow"],
+                tur.delayParameters["arg"]
+            );
+            tur.delayParameters = null;
+        } else if (tur._transportEventId !== null && this.synth.transport.isAvailable) {
+            this.synth.transport.clear(tur._transportEventId);
+            tur._transportEventId = null;
+            if (tur.delayParameters) {
+                tur._transportTime = this.synth.transport.seconds;
+                this.runFromBlockNow(
+                    this,
+                    turtle,
+                    tur.delayParameters["blk"],
+                    tur.delayParameters["flow"],
+                    tur.delayParameters["arg"]
+                );
+                tur.delayParameters = null;
+            }
+        }
+    }
+
+    /**
+     * Breaks a loop.
+     *
+     * @param turtle - Turtle object
+     * @returns {void}
+     */
+    doBreak(turtle) {
+        // Look for a parent loopBlock in queue and set its count to 1
+        let parentLoopBlock = null;
+        let loopBlkIdx = -1;
+
+        const queueLength = turtle.queue.length;
+        for (let i = queueLength - 1; i > -1; i--) {
+            if (
+                ["forever", "repeat", "while", "until"].includes(
+                    this.blockList[turtle.queue[i].blk].name
+                )
+            ) {
+                // while or until
+                loopBlkIdx = turtle.queue[i].blk;
+                parentLoopBlock = this.blockList[loopBlkIdx];
+                // Flush the parent from the queue
+                turtle.queue.splice(i, 1);
+                break;
+            } else if (
+                ["forever", "repeat", "while", "until"].includes(
+                    this.blockList[turtle.queue[i].parentBlk].name
+                )
+            ) {
+                // repeat or forever
+                loopBlkIdx = turtle.queue[i].parentBlk;
+                parentLoopBlock = this.blockList[loopBlkIdx];
+                // Flush the parent from the queue
+                turtle.queue.splice(i, 1);
+                break;
+            }
+        }
+
+        // eslint-disable-next-line eqeqeq
+        if (parentLoopBlock == null) {
+            // Flush the child flow
+            turtle.queue.pop();
+            return;
+        }
+
+        // For while and until, we need to add any childflow from the parent to the queue
+        if (parentLoopBlock.name === "while" || parentLoopBlock.name === "until") {
+            const childFlow = this.deps.utils.last(parentLoopBlock.connections);
+            // eslint-disable-next-line eqeqeq
+            if (childFlow != null) {
+                const queueBlock = new Queue(childFlow, 1, loopBlkIdx);
+                // We need to keep track of the parent block to the child flow so we can
+                // unlightlight the parent block after the child flow completes
+                turtle.parentFlowQueue.push(loopBlkIdx);
+                turtle.queue.push(queueBlock);
+            }
+        }
+    }
+
+    /**
+     * Stops one turtle, including the next block it has already scheduled,
+     * while the other turtles keep running.
+     *
+     * @param {number} turtle - Index of the turtle to stop.
+     * @returns {void}
+     */
+    stopTurtleRun(turtle) {
+        const tur = this.turtles.ithTurtle(turtle);
+
+        tur.queue = [];
+        tur.parentFlowQueue = [];
+        tur.unhighlightQueue = [];
+        tur.parameterQueue = [];
+        tur.actionBoundaries = [];
+
+        tur.singer.tieCarryOver = 0;
+        tur.singer.runningFromEvent = false;
+        for (const b in tur.endOfClampSignals) {
+            tur.endOfClampSignals[b] = tur.endOfClampSignals[b].map(signal =>
+                signal && signal.startsWith("_playnote_") ? null : signal
+            );
+        }
+        this.dispatchUnissuedSignals(tur);
+        tur.singer.dropPendingNotes();
+        tur.endOfClampSignals = {};
+        tur.butNotThese = {};
+
+        tur.runGeneration += 1;
+        if (tur.delayTimeout !== null) {
+            this._timerManager.clearTimeout(tur.delayTimeout);
+            tur.delayTimeout = null;
+        }
+        if (tur._transportEventId !== null) {
+            this.synth.transport.clear(tur._transportEventId);
+            tur._transportEventId = null;
+        }
+        delete this.stepQueue[turtle];
+
+        if (tur.running) {
+            this._finishTurtle(this, turtle, 0);
+        }
+    }
+
+    // ========= Behavior =========================================================================
+
+    resetTemperament() {
+        // A temperament only carries over to the next run while the project
+        // still sets one; otherwise it would leak into other projects.
+        const setsTemperament = this.blockList.some(
+            blk => blk && !blk.trash && blk.name === "settemperament"
+        );
+        if (!setsTemperament) {
+            this._userTemperament = null;
+            this.temperamentSelected = [];
+            this.synth.startingPitch = "C4";
+        }
+
+        this.synth.changeInTemperament = false;
+        this.synth.inTemperament = this._userTemperament || "equal";
+    }
+
+    setUserTemperament(temperament) {
+        this._userTemperament = temperament;
+        this.synth.inTemperament = temperament;
+        this.synth.changeInTemperament = true;
+    }
+
+    /**
+     * Initialises a turtle.
+     *
+     * @param turtle
+     * @returns {void}
+     */
+    initTurtle(turtle) {
+        this.connectionStore[turtle] = {};
+        this.connectionStoreLock = false;
+        this.switchCases[turtle] = {};
+        this.switchBlocks[turtle] = [];
+        this.returns[turtle] = [];
+
+        this.notation.notationStaging[turtle] = [];
+        this.notation.notationDrumStaging[turtle] = [];
+        this.notation.pickupPoint[turtle] = null;
+        this.notation.pickupPOW2[turtle] = false;
+
+        this.turtles.ithTurtle(turtle).initTurtle(this._exportingNotation);
+    }
+
+    /**
+     * Cleans up audio, transport, and visual state after a run has fully
+     * completed — either naturally (via _lastNoteTimeout) or on explicit stop.
+     *
+     * This is the shared subset of doStopTurtles that is safe to call from
+     * the deferred natural-completion path.  It does NOT set stopTurtle,
+     * cancel managed timers, or reset UI — those belong only in
+     * doStopTurtles when the user presses Stop.
+     *
+     * @returns {void}
+     */
+    _cleanupAfterCompletion() {
+        // Skip if cleanup already ran (two turtles finishing far apart).
+        if (!this._synthsInitialized && this.sounds.length === 0) {
+            return;
+        }
+
+        for (const sound in this.sounds) {
+            this.sounds[sound].stop();
+        }
+
+        this.sounds = [];
+
+        // Kill all active audio voices to prevent "zombie audio"
+        for (const turtle of Object.keys(this.turtles.turtleList)) {
+            const tur = this.turtles.getTurtle(turtle);
+            if (tur && tur.singer && typeof tur.singer.killAllVoices === "function") {
+                tur.singer.killAllVoices();
+            }
+
+            // One bad instrument must not abort the rest of the teardown below,
+            // which is what disposes instruments and resets _synthsInitialized.
+            for (const instrumentName in this.deps.instruments[turtle]) {
+                try {
+                    this.synth.stopSound(turtle, instrumentName);
+                } catch (e) {
+                    console.debug("Error stopping instrument " + instrumentName + ":", e);
+                }
+            }
+            const comp = this.turtles.getTurtle(turtle).companionTurtle;
+            if (comp !== null && comp !== undefined) {
+                const compTurtle = this.turtles.getTurtle(comp);
+                compTurtle.running = false;
+                if (compTurtle.interval !== undefined) {
+                    if (!this._timerManager.clearInterval(compTurtle.interval)) {
+                        clearInterval(compTurtle.interval);
+                    }
+                    compTurtle.interval = undefined;
+                }
+            }
+        }
+
+        // Cancel Transport-scheduled events and reset position
+        if (this.synth.transport.isAvailable) {
+            this.synth.transport.cancel();
+            this.synth.transport.seconds = 0;
+        }
+
+        for (const t of this.activity.turtles.turtleList) {
+            t._transportTime = null;
+            t._transportEventId = null;
+        }
+
+        this.synth.stop();
+
+        this.synth.disposeAllInstruments();
+        this._synthsInitialized = false;
+
+        this.clearTurtleListeners(true);
+
+        // eslint-disable-next-line eqeqeq
+        if (this.cameraID != null) {
+            if (this.deps.utils.doStopVideoCam) {
+                this.deps.utils.doStopVideoCam(this.cameraID, this.setCameraID);
+            }
+        }
+    }
+
+    /**
+     * Stops the turtles and cleans up a few odds and ends.
+     * The stop button was pressed.
+     *
+     * @returns {void}
+     */
+    doStopTurtles() {
+        this.stopTurtle = true;
+        this.runGeneration += 1;
+        this.turtles.markAllAsStopped();
+        this._cancelSpeech();
+
+        // Cancel all pending timers to prevent zombie graphics and sounds.
+        const cancelledTimers = this._timerManager.clearAll();
+        if (this.blocks && typeof this.blocks.clearLongPressTimeout === "function") {
+            this.blocks.clearLongPressTimeout();
+        }
+        if (cancelledTimers > 0) {
+            console.debug(
+                "ManagedTimer: cancelled " + cancelledTimers + " pending timer(s) on stop"
+            );
+        }
+
+        // Remove active stage listeners and clear listener objects across all turtles,
+        // except ones marked persistent (e.g. a Listen block's click handler).
+        this.clearTurtleListeners(true);
+
+        // Prevent stale timeout from firing cleanup on next run.
+        this._lastNoteTimeout = null;
+
+        // clearAll() above cancels the value-bar timeout without running its
+        // callback, so reset both directly to avoid valueBarVisible getting
+        // stuck true (and hotkeys stuck blocked) if a stop happens mid-window.
+        this._valueBarTimeout = null;
+        if (this.activity) this.activity.valueBarVisible = false;
+
+        this.runningMIDI = false;
+        document.body.style.cursor = "default";
+
+        this._cleanupAfterCompletion();
+
+        for (const arg in this.evalOnStopList) {
+            this.safePluginExecute(this.evalOnStopList[arg], this);
+        }
+
+        // Recorder stop is Stop-only — natural completion must not
+        // interrupt an in-progress WAV recording.
+        if (this.synth.recorder && this.synth.recorder.state === "recording")
+            this.synth.recorder.stop();
+
+        this.onStopTurtle();
+        if (
+            this.blocks &&
+            this.blocks.visible &&
+            typeof this.blocks.unhighlightAll === "function"
+        ) {
+            this.blocks.unhighlightAll();
+        }
+        this.blocks.bringToTop();
+
+        this._alreadyRunning = false;
+        this.stepQueue = {};
+        for (const turtle of this.turtles.turtleList) {
+            turtle.unhighlightQueue = [];
+            if (turtle.singer) {
+                turtle.singer._unhighlightTimers = {};
+                turtle.singer.tie = false;
+                turtle.singer.tieCarryOver = 0;
+                turtle.singer.tieNotePitches = [];
+                turtle.singer.tieNoteExtras = [];
+                turtle.singer.tieFirstDrums = [];
+            }
+            turtle.endOfClampSignals = {};
+            if (turtle.delayTimeout !== null) {
+                clearTimeout(turtle.delayTimeout);
+                turtle.delayTimeout = null;
+            }
+        }
+
+        this._restoreConnections();
+
+        document.body.style.cursor = "default";
+        if (this.deps.config.showBlocksAfterRun) {
+            this.blocks.showBlocks();
+            document.getElementById("stop").style.color = "white";
+        }
+
+        this.deps.config.showBlocksAfterRun = false;
+    }
+
+    /**
+     * Takes one step for each turtle in executing Logo commands.
+     *
+     * @returns {void}
+     */
+    step() {
+        for (const turtle in this.stepQueue) {
+            if (this.stepQueue[turtle].length > 0) {
+                if (
+                    turtle in this._unhighlightStepQueue &&
+                    // eslint-disable-next-line eqeqeq
+                    this._unhighlightStepQueue[turtle] != null
+                ) {
+                    if (this.blocks.visible) {
+                        this.blocks.unhighlight(this._unhighlightStepQueue[turtle]);
+                    }
+                    this._unhighlightStepQueue[turtle] = null;
+                }
+
+                const stepItem = this.stepQueue[turtle].shift();
+                if (stepItem !== null && stepItem !== undefined) {
+                    const blk =
+                        typeof stepItem === "object" && stepItem !== null ? stepItem.blk : stepItem;
+                    const isflow =
+                        typeof stepItem === "object" && stepItem !== null
+                            ? (stepItem.isflow ?? 0)
+                            : 0;
+                    const receivedArg =
+                        typeof stepItem === "object" && stepItem !== null
+                            ? (stepItem.receivedArg ?? null)
+                            : null;
+                    if (blk !== null && blk !== undefined) {
+                        this.runFromBlockNow(this, turtle, blk, isflow, receivedArg);
+                    }
+                    Logo._recycleStepItem(stepItem);
+                }
+            }
+        }
+    }
+
+    /**
+     * Initialises interpreter state and launches all turtle execution queues.
+     *
+     * This is the main entry point for program execution. It proceeds in two
+     * phases:
+     *
+     *   Phase 1 — Setup: resets run-state flags, clears notation and MIDI
+     *     buffers, initialises every turtle, removes stale event listeners, and
+     *     builds the named-action table by scanning `blocks.stackList`.
+     *
+     *   Phase 2 — Dispatch: kicks off execution by calling `runFromBlock` for
+     *     each start/drum/status/oscilloscope block found on the canvas.
+     *     Status and oscilloscope blocks run first (with a 250 ms head-start so
+     *     they can display their widgets before music begins); all other start
+     *     blocks follow together in a single guarded timeout.
+     *
+     * @param {number|null} startHere - Block index to start from directly, or
+     *     null to discover all start blocks on the canvas automatically.
+     * @param {*} env - Initial argument value forwarded to the first block as
+     *     `receivedArg` (typically null for top-level runs).
+     * @returns {void}
+     */
+    runLogoCommands(startHere, env) {
+        // Drop any speech the previous run left queued immediately, including
+        // while the optional performance tracker is still loading.
+        this._cancelSpeech();
+
+        const performanceModeEnabled =
+            typeof window !== "undefined" &&
+            (window.DEBUG_PERFORMANCE === true || _performanceRequestedInURL());
+
+        if (
+            performanceModeEnabled &&
+            !getPerformanceTracker() &&
+            typeof requirejs === "function" &&
+            !this._performanceTrackerLoadFailed
+        ) {
+            requirejs(
+                ["utils/performanceTracker"],
+                () => this.runLogoCommands(startHere, env),
+                () => {
+                    this._performanceTrackerLoadFailed = true;
+                    this.runLogoCommands(startHere, env);
+                }
+            );
+            return;
+        }
+
+        const tracker = getPerformanceTracker();
+        if (tracker) {
+            if (performanceModeEnabled) {
+                tracker.enable();
+            } else {
+                tracker.disable();
+            }
+        }
+
+        this._prematureRestart = this._alreadyRunning;
+
+        if (this._alreadyRunning && this._runningBlock !== null) {
+            this._ignoringBlock = this._runningBlock;
+        } else {
+            this._ignoringBlock = null;
+        }
+
+        // Reset run-state flags for the new execution.
+        this._alreadyRunning = false;
+        this._prematureRestart = false;
+
+        // eslint-disable-next-line eqeqeq
+        if (this._lastNoteTimeout != null) {
+            this._timerManager.clearTimeout(this._lastNoteTimeout);
+            this._lastNoteTimeout = null;
+            // Previous run's cleanup never fired — run it now.
+            this._cleanupAfterCompletion();
+        }
+
+        this._restoreConnections(); // Restore any broken connections.
+        this.deps.storage.saveLocally(); // Save the state before running.
+
+        for (const arg in this.evalOnStartList) {
+            this.safePluginExecute(this.evalOnStartList[arg], this);
+        }
+
+        this.stopTurtle = false;
+        this.runGeneration += 1;
+
+        this._syncCounter = 0;
+        this._iterationBudget = this._MAX_ITERATIONS + 1;
+
+        this.blocks.unhighlightAll();
+        this.blocks.bringToTop(); // Draw under the blocks.
+
+        this.deps.messageHandler.hide();
+
+        // Run the Logo commands here.
+        this.time = new Date().getTime();
+        this.firstNoteTime = null;
+        this.firstNoteAudioTime = null;
+
+        // Ensure we have at least one turtle that is not in the trash. This
+        // has to happen before prepSynths() and initTurtle() below, or a
+        // turtle added here gets no synth and no notation state.
+        if (this.turtles.turtleCount() === 0) {
+            this.turtles.addTurtle(null);
+        }
+
+        this.deps.Singer.masterBPM = TARGETBPM;
+        this.deps.Singer.defaultBPMFactor = TONEBPM / TARGETBPM;
+        this.resetTemperament();
+        this.deps.Singer.clearPitchToFrequencyCache();
+
+        this._checkingCompletionState = false;
+        this._exportNotationFinished = false;
+
+        for (const turtle of this.turtles.turtleList) {
+            turtle.embeddedGraphicsPending = 0;
+            turtle.embeddedGraphicsGeneration += 1;
+        }
+
+        // masterVolume is static, so a level left behind by an earlier run would still be in
+        // force here. This belongs on the run boundary rather than in prepSynths(): prepSynths()
+        // skips its setup when the synths are already up (a restart with no stop in between) and
+        // it also runs mid-project when onEveryBeatDo adds a companion turtle, where resetting
+        // would pull the rug out from a project that set its own level.
+        this.deps.Singer.resetMasterVolume(this);
+
+        this.prepSynths();
+
+        if (this.synth.transport.isAvailable) {
+            this.synth.transport.start();
+            const transportNow = this.synth.transport.seconds;
+            for (const turtle of this.activity.turtles.turtleList) {
+                turtle._transportTime = transportNow;
+            }
+        }
+
+        this.notation.notationStaging = {};
+        this.notation.notationDrumStaging = {};
+
+        this.turtleHeaps = {};
+        this.turtleDicts = {};
+        this.notationNotes = {};
+        this._midiData = {};
+        const statusWidgetOpen =
+            this.deps.widgetWindows &&
+            typeof this.deps.widgetWindows.isOpen === "function" &&
+            this.deps.widgetWindows.isOpen("status");
+        if (!statusWidgetOpen) {
+            this.statusFields = [];
+        }
+        this.specialArgs = [];
+        this.connectionStore = {};
+        if (!this.runningLilypond && !this.runningAbc) {
+            this.notationOutput = "";
+        }
+        if (this.recordingBuffer && !this.recording) {
+            this.recordingBuffer = {
+                hasData: false,
+                notationOutput: "",
+                notationNotes: {},
+                notationStaging: {},
+                notationDrumStaging: {}
+            };
+        }
+
+        // Each turtle needs to keep its own wait time and music states.
+        for (const turtle of Object.keys(this.turtles.turtleList)) {
+            this.initTurtle(turtle);
+        }
+
+        this.inPitchDrumMatrix = false;
+        this.inMatrix = false;
+        this.inLegoWidget = false;
+        this.inMusicKeyboard = false;
+        this.inTimbre = false;
+        this.inSample = false;
+        this.inTempo = false;
+        this.inPitchSlider = false;
+        this.inPitchStaircase = false;
+        this.inReflectionMatrix = false;
+        this.inOscilloscope = false;
+        this.inArpeggio = false;
+        this.inRhythmRuler = false;
+        this.inTempo = false;
+        this.insideModeWidget = false;
+        this.insideMeterWidget = false;
+        this.insideTemperament = false;
+        this.rhythmRulerMeasure = null;
+        this._currentDrumBlock = null;
+        this.inStatusMatrix = false;
+        this.pitchBlocks = [];
+        this.drumBlocks = [];
+        this.tuplet = {};
+        this.tupletParams = {};
+        this.tupletRhythms = {};
+        this.addingNotesToTuplet = {};
+        this.modeBlock = null;
+        this._meterBlock = null;
+
+        // Remove any listeners that might be still active.
+        this.clearTurtleListeners();
+
+        // Init the graphic state.
+        for (const turtle of Object.keys(this.turtles.turtleList)) {
+            const requiredTurtle = this.turtles.getTurtle(turtle);
+            requiredTurtle.container.x = this.turtles.turtleX2screenX(requiredTurtle.x);
+            requiredTurtle.container.y = this.turtles.turtleY2screenY(requiredTurtle.y);
+        }
+
+        // Set up status block.
+        if (this.deps.widgetWindows.isOpen("status")) {
+            if (this.statusMatrix === null) {
+                this.statusMatrix = new this.deps.classes.StatusMatrix();
+            }
+
+            this.statusMatrix.init(this.activity);
+        }
+
+        // Execute turtle code here
+        /*
+        ===========================================================================
+        (1) Find the start block (or the top of each stack) and build a list
+            of all of the named action stacks.
+        ===========================================================================
+        */
+        const startBlocks = [];
+        this.blocks.findStacks();
+        this.actions = {};
+
+        const stackListLength = this.blocks.stackList.length;
+        for (let blk = 0; blk < stackListLength; blk++) {
+            if (
+                ["start", "drum", "status", "oscilloscope"].includes(
+                    this.blockList[this.blocks.stackList[blk]].name
+                )
+            ) {
+                // Don't start on a start block in the trash
+                if (!this.blockList[this.blocks.stackList[blk]].trash) {
+                    startBlocks.push(this.blocks.stackList[blk]);
+                }
+            } else if (this.blockList[this.blocks.stackList[blk]].name === "action") {
+                // Does the action stack have a name?
+                const c = this.blockList[this.blocks.stackList[blk]].connections[1];
+                // Is there a block in the action clamp?
+                const b = this.blockList[this.blocks.stackList[blk]].connections[2];
+                // eslint-disable-next-line eqeqeq
+                if (c != null && b != null) {
+                    // Don't use an action block in the trash
+                    if (!this.blockList[this.blocks.stackList[blk]].trash) {
+                        // We need to calculate the value of block c.
+                        // this.actions[this.blockList[c].value] = b;
+                        const name = this.parseArg(this, 0, c, null);
+                        this.actions[name] = b;
+                    }
+                }
+            }
+        }
+
+        this.svgOutput = "";
+        this.svgBackground = true;
+
+        for (const turtle of this.turtles.turtleList) {
+            turtle.parentFlowQueue = [];
+            turtle.unhighlightQueue = [];
+            turtle.parameterQueue = [];
+            turtle.actionBoundaries = [];
+        }
+
+        if (this.turtleDelay === 0) {
+            // Clear parameters displayed on blocks before running
+            // full speed.
+            this.blocks.clearParameterBlocks();
+        }
+
+        this.onRunTurtle();
+
+        // Mark all turtles as not running.
+        for (const turtle of Object.keys(this.turtles.turtleList)) {
+            this.turtles.getTurtle(turtle).running = false;
+        }
+
+        // Performance instrumentation: begin tracking
+        getPerformanceTracker()?.startRun();
+
+        /*
+        ===========================================================================
+        (2) Execute the stack. (A bit complicated due to lots of corner cases.)
+        ===========================================================================
+        */
+        if (this.turtles.turtleCount() === 0) {
+            this.deps.errorHandler(NOACTIONERRORMSG, null, _("start"));
+            this.runningMIDI = false;
+            document.body.style.cursor = "default";
+            // eslint-disable-next-line eqeqeq
+        } else if (startHere != null) {
+            // If a block to start from was passed, find its associated
+            // turtle, i.e., which turtle should we use?
+            let turtle = 0;
+            while (
+                this.turtles.getTurtle(turtle).inTrash &&
+                turtle < this.turtles.getTurtleCount()
+            ) {
+                ++turtle;
+            }
+
+            if (["start", "drum"].includes(this.blockList[startHere].name)) {
+                turtle = this.blockList[startHere].value;
+            }
+
+            const tur = this.turtles.ithTurtle(turtle);
+
+            tur.queue = [];
+            tur.parentFlowQueue = [];
+            tur.unhighlightQueue = [];
+            tur.parameterQueue = [];
+            tur.actionBoundaries = [];
+
+            tur.running = true;
+            this.runFromBlock(this, turtle, startHere, 0, env);
+        } else if (startBlocks.length > 0) {
+            let delayStart = 0;
+            const startBlocksLength = startBlocks.length;
+            // Look for status and oscilloscope blocks.
+            for (let b = 0; b < startBlocksLength; b++) {
+                if (
+                    ["status", "oscilloscope"].includes(this.blockList[startBlocks[b]].name) &&
+                    !this.blockList[startBlocks[b]].trash
+                ) {
+                    const turtle = 0;
+                    const tur = this.turtles.ithTurtle(turtle);
+
+                    tur.queue = [];
+                    tur.parentFlowQueue = [];
+                    tur.unhighlightQueue = [];
+                    tur.parameterQueue = [];
+                    tur.actionBoundaries = [];
+
+                    tur.running = true;
+                    delayStart = 250;
+                    this.runFromBlock(this, turtle, startBlocks[b], 0, env);
+                }
+            }
+
+            this._timerManager.setGuardedTimeout(
+                () => {
+                    if (delayStart !== 0) {
+                        // Launching status/oscilloscope block would have hidden the
+                        // Stop Button so show it again.
+                        this.onRunTurtle();
+                    }
+
+                    // If there are multiple start blocks, run them all.
+                    for (let b = 0; b < startBlocksLength; b++) {
+                        if (
+                            !["status", "oscilloscope"].includes(
+                                this.blockList[startBlocks[b]].name
+                            )
+                        ) {
+                            const turtle = this.blockList[startBlocks[b]].value;
+                            const tur = this.turtles.ithTurtle(turtle);
+
+                            tur.queue = [];
+                            tur.parentFlowQueue = [];
+                            tur.unhighlightQueue = [];
+                            tur.parameterQueue = [];
+                            tur.actionBoundaries = [];
+
+                            if (!tur.inTrash) {
+                                tur.running = true;
+                                this.runFromBlock(this, turtle, startBlocks[b], 0, env);
+                            }
+                        }
+                    }
+                },
+                delayStart,
+                () => this.stopTurtle
+            );
+        } else {
+            this.runningMIDI = false;
+            document.body.style.cursor = "default";
+        }
+
+        this.deps.refreshCanvas();
+    }
+
+    // True while headlessly exporting notation.
+    get _exportingNotation() {
+        return this.runningLilypond || this.runningAbc || this.runningMxml || this.runningMIDI;
+    }
+
+    /**
+     * Schedules execution of block `blk` after the turtle's current delay.
+     *
+     * In step mode (`turtleDelay === TURTLESTEP`), the block is pushed onto
+     * `stepQueue` and executed when the user advances manually.  Otherwise a
+     * guarded `setTimeout` is used, which respects `stopTurtle` and the
+     * turtle's accumulated `waitTime`.
+     *
+     * @param {Logo} logo - The running Logo instance (always `this`).
+     * @param {number} turtle - Index of the active turtle.
+     * @param {number|null} blk - Index of the block to execute; a null value
+     *     returns immediately without scheduling.
+     * @param {number} isflow - 1 when called from within a flow (enables the
+     *     sync-counter yield path in `runFromBlockNow`), 0 for argument
+     *     evaluation.
+     * @param {*} receivedArg - Argument passed down from an enclosing action
+     *     call; forwarded unchanged to `runFromBlockNow`.
+     * @returns {void}
+     */
+    runFromBlock(logo, turtle, blk, isflow, receivedArg) {
+        this._runningBlock = blk;
+        // eslint-disable-next-line eqeqeq
+        if (blk == null) return;
+
+        this.receivedArg = receivedArg;
+        const tur = logo.turtles.ithTurtle(turtle);
+
+        // Synchronous fast path for notation exports; yield every 100 transitions.
+        if (logo._exportingNotation) {
+            logo._syncCounter++;
+            if (logo._syncCounter >= logo._EXPORT_YIELD_AFTER_SYNC_RUNS) {
+                logo._syncCounter = 0;
+                const generation = tur.runGeneration;
+                logo._timerManager.setGuardedTimeout(
+                    () => logo.runFromBlockNow(logo, turtle, blk, isflow, receivedArg),
+                    0,
+                    () => logo.stopTurtle || tur.runGeneration !== generation
+                );
+            } else {
+                logo.runFromBlockNow(logo, turtle, blk, isflow, receivedArg);
+            }
+            return;
+        }
+
+        // Reset async yield counters – execution will go through
+        // setTimeout below, giving the event loop a chance to breathe.
+        logo._syncCounter = 0;
+
+        if (tur._transportTime === null && logo.synth.transport.isAvailable) {
+            tur._transportTime = logo.synth.transport.seconds;
+        }
+
+        const delay = logo.turtleDelay + tur.waitTime;
+        tur.doWait(0);
+
+        if (!logo.stopTurtle) {
+            if (logo.turtleDelay === TURTLESTEP) {
+                // Step mode
+                if (!(turtle in logo.stepQueue)) {
+                    logo.stepQueue[turtle] = [];
+                }
+                logo.stepQueue[turtle].push(Logo._obtainStepItem(blk, isflow, receivedArg));
+            } else if (
+                logo.turtleDelay === 0 &&
+                delay > 0 &&
+                logo.synth.transport.isAvailable &&
+                logo.synth.transport.isClockRunning &&
+                tur._transportTime !== null
+            ) {
+                const transportTime = Math.max(
+                    tur._transportTime + delay / 1000,
+                    logo.synth.transport.seconds
+                );
+                tur.delayParameters = { blk: blk, flow: isflow, arg: receivedArg };
+                tur._transportEventId = logo.synth.transport.schedule(audioContextTime => {
+                    const tur2 = logo.activity.turtles.ithTurtle(turtle);
+                    tur2._transportTime = logo.synth.transport.getSecondsAtTime(audioContextTime);
+                    tur2._transportEventId = null;
+                    tur2.delayParameters = null;
+                    if (!logo.stopTurtle) {
+                        logo.runFromBlockNow(logo, turtle, blk, isflow, receivedArg);
+                    }
+                }, transportTime);
+            } else {
+                tur.delayParameters = { blk: blk, flow: isflow, arg: receivedArg };
+                tur.delayTimeout = logo._timerManager.setGuardedTimeout(
+                    () => {
+                        if (logo.synth.transport.isAvailable) {
+                            const tur2 = logo.activity.turtles.ithTurtle(turtle);
+                            tur2._transportTime = logo.synth.transport.seconds;
+                        }
+                        tur.delayTimeout = null;
+                        tur.delayParameters = null;
+                        logo.runFromBlockNow(logo, turtle, blk, isflow, receivedArg);
+                    },
+                    delay,
+                    () => logo.stopTurtle
+                );
+            }
+        }
+    }
+
+    /**
+     * Executes block `blk` synchronously, then continues the turtle's queue.
+     *
+     * This is the hot path of the interpreter and handles three phases per
+     * block invocation:
+     *
+     *   (1) Argument evaluation — calls `parseArg` for each non-flow input
+     *       connection, building the `args` array.
+     *
+     *   (2) Block execution — calls either a plugin handler from `evalFlowDict`
+     *       or the block's own `proto.flow` method. Value blocks and arg blocks
+     *       reached as flow blocks display their value instead.
+     *
+     *   (3) Queue continuation — pops the next block from `tur.queue` and
+     *       recurses (directly or via a guarded `setTimeout` to yield the event
+     *       loop periodically). Handles backward-mode traversal, block
+     *       highlighting, and post-run notation export on queue exhaustion.
+     *
+     * @param {Logo} logo - The running Logo instance (always `this`).
+     * @param {number} turtle - Index of the active turtle.
+     * @param {number} blk - Index of the block to execute.
+     * @param {number} isflow - 1 when executing within a flow; enables the
+     *     sync-counter yield path.
+     * @param {*} receivedArg - Argument forwarded from an enclosing action
+     *     call.
+     * @param {number} [queueStart=0] - Queue depth threshold; blocks above
+     *     this index are processed, allowing partial-queue execution.
+     * @returns {void}
+     */
+    runFromBlockNow(logo, turtle, blk, isflow, receivedArg, queueStart) {
+        // Sometimes we don't want to unwind the entire queue.
+        if (queueStart === undefined) queueStart = 0;
+
+        if (queueStart === 0 && logo._lastNoteTimeout !== null) {
+            logo._timerManager.clearTimeout(logo._lastNoteTimeout);
+            logo._lastNoteTimeout = null;
+        }
+
+        while (blk !== null && blk !== undefined && !logo.stopTurtle) {
+            const tracker = getPerformanceTracker();
+            const profilingEnabled =
+                tracker && typeof tracker.isEnabled === "function" && tracker.isEnabled();
+            let profilingStart = null;
+            if (profilingEnabled) {
+                profilingStart =
+                    typeof performance !== "undefined" && typeof performance.now === "function"
+                        ? performance.now()
+                        : Date.now();
+                if (!logo.blockTimings) {
+                    logo.blockTimings = {};
+                }
+                tracker.enterBlock();
+            }
+
+            this._alreadyRunning = true;
+
+            this.receivedArg = receivedArg;
+
+            if (--logo._iterationBudget <= 0) {
+                logo.deps.errorHandler(
+                    _("Infinite loop detected. Execution stopped to prevent browser freeze."),
+                    blk
+                );
+                logo.stopTurtle = true;
+                logo._alreadyRunning = false;
+                logo._syncCounter = 0;
+                logo._iterationBudget = logo._MAX_ITERATIONS + 1;
+                if (profilingEnabled) {
+                    Logo._recordBlockTiming(logo, blk, profilingStart);
+                    performanceTracker.exitBlock();
+                }
+                return;
+            }
+
+            const currentBlock = logo.blockList[blk];
+            const blockName = currentBlock.name;
+            const proto = currentBlock.protoblock;
+            const connections = currentBlock.connections;
+            const lastConnection = logo.deps.utils.last(connections);
+
+            /*
+===========================================================================
+(1) Evaluate any arguments (beginning with connection[1]).
+===========================================================================
+*/
+            const tur = logo.turtles.ithTurtle(turtle);
+            if (tur && !tur.actionBoundaries) tur.actionBoundaries = [];
+            const args = [];
+
+            if (proto.args > 0) {
+                for (let i = 1; i <= proto.args; i++) {
+                    if (proto.dockTypes[i] === "in") {
+                        if (connections[i] !== null) {
+                            args.push(connections[i]);
+                        }
+                    } else {
+                        args.push(logo.parseArg(logo, turtle, connections[i], blk, receivedArg));
+                    }
+
+                    if (
+                        tur.singer.inNoteBlock.length > 0 &&
+                        connections[i] !== undefined &&
+                        logo.blockList[connections[i]] !== undefined &&
+                        logo.blockList[connections[i]].name === "currentpitch"
+                    ) {
+                        // Re-eval this arg after note block ends to
+                        // ensure that the current pitch is uptodate.
+                        logo.specialArgs.push([args, logo, turtle, blk, receivedArg, null, isflow]);
+                    }
+                }
+            }
+
+            /*
+        ===========================================================================
+        (2) Run function associated with the block.
+        ===========================================================================
+        */
+
+            let nextFlow = null;
+            if (!currentBlock.isValueBlock()) {
+                // nextFlow remains null for value blocks.
+
+                // All flow blocks have a last connection (nextFlow), but
+                // it can be null (i.e., end of a flow).
+                if (tur.singer.backward.length > 0) {
+                    // Inside a "backward" (or "duplicatenotes") clamp: traverse
+                    // the block chain in reverse using connections[0] (the
+                    // "previous" link) instead of the normal lastConnection.
+                    const lastBackward = logo.deps.utils.last(tur.singer.backward);
+                    const backwardBlock = logo.blockList[lastBackward];
+                    const backwardConnections = backwardBlock.connections;
+
+                    // connection[1] for "backward", connection[2] for wrapper
+                    // blocks like "duplicatenotes" — points to the first block
+                    // inside the clamp.
+                    const c = backwardBlock.name === "backward" ? 1 : 2;
+
+                    if (!logo.blocks.sameGeneration(backwardConnections[c], blk)) {
+                        // Current block is outside the backward clamp; use normal
+                        // forward flow.
+                        nextFlow = lastConnection;
+                    } else {
+                        // Walk backward: step to the previous block in the chain.
+                        nextFlow = connections[0];
+                        if (
+                            nextFlow !== null &&
+                            (logo.blockList[nextFlow].name === "action" ||
+                                logo.blockList[nextFlow].name === "backward")
+                        ) {
+                            // Hit a clamp boundary block — stop traversal here.
+                            nextFlow = null;
+                        } else {
+                            if (!logo.blocks.sameGeneration(backwardConnections[c], nextFlow)) {
+                                // nextFlow stepped outside the clamp scope; fall
+                                // back to forward flow.
+                                nextFlow = lastConnection;
+                            } else {
+                                nextFlow = connections[0];
+                            }
+                        }
+                    }
+                } else {
+                    nextFlow = lastConnection;
+                }
+
+                if (nextFlow === -1) {
+                    nextFlow = null;
+                }
+
+                if (nextFlow !== null && nextFlow !== undefined) {
+                    tur.queue.push(Queue.obtain(nextFlow, 1, blk, receivedArg));
+                }
+            }
+
+            // Some flow blocks have childflows, e.g., repeat.
+            let childFlow = null;
+            let childFlowCount = 0;
+            const actionArgs = [];
+
+            // Highlight only the current executing block
+            if (logo.blocks.visible) {
+                if (!tur.singer.suppressOutput && tur.singer.justCounting.length === 0) {
+                    // Unhighlight any previously highlighted block
+                    if (
+                        logo._currentlyHighlightedBlock !== null &&
+                        logo._currentlyHighlightedBlock !== blk
+                    ) {
+                        logo.blocks.unhighlight(logo._currentlyHighlightedBlock);
+                    }
+                    // Highlight the current block
+                    logo.blocks.highlight(blk, false);
+                    logo._currentlyHighlightedBlock = blk;
+                    // Force stage update so highlight is visible when blocks were shown during execution.
+                    // Skip if the block is off-screen — the highlight is invisible anyway.
+                    if (logo.stage && currentBlock._viewportVisible !== false) {
+                        logo.deps.markStageDirty();
+                    }
+                }
+            }
+
+            // Value blocks that are not styled as arg blocks (note counter,
+            // calculate, make block) define arg() but no flow(). Clicking one on
+            // its own should show its value like any other value block.
+            const returnsValue =
+                currentBlock.isArgBlock() ||
+                (!(currentBlock.name in logo.evalFlowDict) && typeof proto.flow !== "function");
+
+            if (!returnsValue) {
+                let res = null;
+                // Is it a plugin?
+                if (currentBlock.name in logo.evalFlowDict) {
+                    logo.pluginReturnValue = null;
+                    logo.safePluginExecute(
+                        logo.evalFlowDict[currentBlock.name],
+                        logo,
+                        turtle,
+                        blk,
+                        receivedArg,
+                        actionArgs,
+                        args,
+                        isflow
+                    );
+                    // Clamp blocks will return the child flow.
+                    res = logo.pluginReturnValue;
+                } else {
+                    res = proto.flow(args, logo, turtle, blk, receivedArg, actionArgs, isflow);
+                }
+
+                if (res) {
+                    const [cf, cfc, ret] = res;
+                    if (cf !== undefined) childFlow = cf;
+                    if (cfc !== undefined) childFlowCount = cfc;
+                    if (ret) {
+                        if (currentBlock.name === "return") {
+                            const boundary =
+                                tur.actionBoundaries && tur.actionBoundaries.length > 0
+                                    ? tur.actionBoundaries.pop()
+                                    : queueStart;
+                            while (tur.queue.length > boundary) {
+                                const popped = tur.queue.pop();
+                                if (popped && popped.blk in tur.endOfClampSignals) {
+                                    while (tur.endOfClampSignals[popped.blk].length > 0) {
+                                        const signal = tur.endOfClampSignals[popped.blk].pop();
+                                        if (signal !== null && signal !== undefined) {
+                                            logo.stage.dispatchEvent(signal);
+                                        }
+                                    }
+                                }
+                                Queue.recycle(popped);
+                            }
+                        } else {
+                            if (profilingEnabled) {
+                                Logo._recordBlockTiming(logo, blk, profilingStart);
+                                tracker.exitBlock();
+                            }
+                            return ret;
+                        }
+                    }
+                }
+            } else {
+                if (
+                    // If it's an arg block, print its value.
+                    currentBlock.isArgBlock() ||
+                    ["anyout", "numberout", "textout", "booleanout"].includes(proto.dockTypes[0])
+                ) {
+                    args.push(logo.parseArg(logo, turtle, blk, blk, receivedArg));
+
+                    const blockLabels = {
+                        width: _("width"),
+                        height: _("height"),
+                        rightpos: _("right (screen)"),
+                        leftpos: _("left (screen)"),
+                        toppos: _("top (screen)"),
+                        bottompos: _("bottom (screen)")
+                    };
+
+                    const label = blockLabels[blockName];
+                    const blockValue = currentBlock.value;
+
+                    if (blockValue === null || blockValue === undefined) {
+                        logo.deps.textMsg("null block value");
+                    } else {
+                        const value = blockValue.toString();
+                        const displayText = label ? label + ": " + value : value;
+                        logo.deps.textMsg(displayText);
+                    }
+                    // Briefly block hotkeys so a hotkey press right after clicking
+                    // this value display can't accidentally spawn a new block
+                    // (#4931). Scoped to just this case, not every status message.
+                    if (logo.activity) {
+                        logo.activity.valueBarVisible = true;
+                        if (logo._valueBarTimeout !== null) {
+                            logo._timerManager.clearTimeout(logo._valueBarTimeout);
+                        }
+                        logo._valueBarTimeout = logo._timerManager.setTimeout(() => {
+                            logo._valueBarTimeout = null;
+                            if (logo.activity) logo.activity.valueBarVisible = false;
+                        }, 3000);
+                    }
+                } else {
+                    logo.deps.errorHandler("I do not know how to " + blockName + ".", blk);
+                }
+
+                logo.stopTurtle = true;
+            }
+
+            /*
+        ===========================================================================
+        (3) Queue block below the current block.
+        ===========================================================================
+        */
+            // Is the block in a queued clamp?
+            if (blk !== logo._ignoringBlock) {
+                if (blk in tur.endOfClampSignals) {
+                    while (tur.endOfClampSignals[blk].length > 0) {
+                        const signal = tur.endOfClampSignals[blk].pop();
+                        // eslint-disable-next-line eqeqeq
+                        if (signal != null) {
+                            logo.stage.dispatchEvent(signal);
+                        }
+                    }
+                }
+            }
+
+            if (logo.statusMatrix && logo.statusMatrix.isOpen && !logo.inStatusMatrix) {
+                logo.statusMatrix.updateAll();
+            }
+
+            // If there is a child flow, queue it.
+            // eslint-disable-next-line eqeqeq
+            if (childFlow != null) {
+                let queueBlock;
+                if (blockName === "doArg" || blockName === "nameddoArg") {
+                    queueBlock = Queue.obtain(childFlow, childFlowCount, blk, actionArgs);
+                } else {
+                    queueBlock = Queue.obtain(childFlow, childFlowCount, blk, receivedArg);
+                }
+                // We need to keep track of the parent block to the child
+                // flow so we can unhighlight the parent block after the
+                // child flow completes.
+                // eslint-disable-next-line eqeqeq
+                if (tur.parentFlowQueue != undefined) {
+                    tur.parentFlowQueue.push(blk);
+                    if (["do", "nameddo", "doArg", "nameddoArg"].includes(blockName)) {
+                        if (!tur.actionBoundaries) {
+                            tur.actionBoundaries = [];
+                        }
+                        tur.actionBoundaries.push(tur.queue.length);
+                    }
+                    tur.queue.push(queueBlock);
+                }
+            }
+
+            let nextBlock = null;
+            let parentBlk = null;
+            let passArg = null;
+
+            if (
+                tur.actionBoundaries &&
+                tur.actionBoundaries.length > 0 &&
+                tur.queue.length <= logo.deps.utils.last(tur.actionBoundaries)
+            ) {
+                tur.actionBoundaries.pop();
+            }
+
+            // Run the last flow in the queue.
+            if (tur.queue.length > queueStart) {
+                const lastQueue = logo.deps.utils.last(tur.queue);
+
+                nextBlock = lastQueue.blk;
+                parentBlk = lastQueue.parentBlk;
+                passArg = lastQueue.args;
+
+                if (lastQueue.count === 1) {
+                    tur.queue.pop();
+                    Queue.recycle(lastQueue);
+                } else {
+                    lastQueue.count--;
+                }
+            }
+
+            // eslint-disable-next-line eqeqeq
+            if (nextBlock != null) {
+                if (parentBlk !== blk) {
+                    // The wait block waits _waitTimes longer than other
+                    // blocks before it is unhighlighted.
+                    if (logo.turtleDelay === TURTLESTEP) {
+                        logo._unhighlightStepQueue[turtle] = blk;
+                    } else {
+                        if (!tur.singer.suppressOutput && tur.singer.justCounting.length === 0) {
+                            logo._timerManager.setGuardedTimeout(
+                                () => {
+                                    if (logo.blocks.visible) {
+                                        logo.blocks.unhighlight(blk);
+                                        // Clear the currently highlighted block if it was this one
+                                        if (logo._currentlyHighlightedBlock === blk) {
+                                            logo._currentlyHighlightedBlock = null;
+                                        }
+                                        if (logo.stage) {
+                                            logo.deps.markStageDirty();
+                                        }
+                                    }
+                                },
+                                Math.max(
+                                    logo.turtleDelay + tur.waitTime,
+                                    MIN_HIGHLIGHT_DURATION_MS
+                                ),
+                                () => logo.stopTurtle
+                            );
+                        }
+                    }
+                }
+
+                if (
+                    // eslint-disable-next-line eqeqeq
+                    (tur.singer.backward.length > 0 && connections[0] == null) ||
+                    (tur.singer.backward.length === 0 &&
+                        // eslint-disable-next-line eqeqeq
+                        lastConnection == null)
+                ) {
+                    if (!tur.singer.suppressOutput && tur.singer.justCounting.length === 0) {
+                        // If we are at the end of the child flow, queue
+                        // the unhighlighting of the parent block to the
+                        // flow.
+                        if (tur.unhighlightQueue !== undefined) {
+                            if (tur.parentFlowQueue.length > 0 && tur.queue.length > 0) {
+                                const lastQueue = logo.deps.utils.last(tur.queue);
+                                const lastParentFlow = logo.deps.utils.last(tur.parentFlowQueue);
+
+                                if (lastQueue.parentBlk !== lastParentFlow) {
+                                    tur.unhighlightQueue.push(lastParentFlow);
+                                }
+                            } else if (tur.unhighlightQueue.length > 0) {
+                                // The child flow is finally complete, so unhighlight.
+                                logo._timerManager.setGuardedTimeout(
+                                    () => {
+                                        if (logo.blocks.visible) {
+                                            const unhighlightBlock = tur.unhighlightQueue.pop();
+                                            logo.blocks.unhighlight(unhighlightBlock);
+                                            // Clear the currently highlighted block if it was this one
+                                            if (
+                                                logo._currentlyHighlightedBlock === unhighlightBlock
+                                            ) {
+                                                logo._currentlyHighlightedBlock = null;
+                                            }
+                                            if (logo.stage) {
+                                                logo.deps.markStageDirty();
+                                            }
+                                        } else {
+                                            tur.unhighlightQueue.pop();
+                                        }
+                                    },
+                                    Math.max(logo.turtleDelay, MIN_HIGHLIGHT_DURATION_MS),
+                                    () => logo.stopTurtle
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // We don't update parameter blocks when running full speed.
+                if (logo.turtleDelay !== 0) {
+                    let updatedParameterBlocks = false;
+                    for (const pblk in tur.parameterQueue) {
+                        if (
+                            logo.blocks.updateParameterBlock(logo, turtle, tur.parameterQueue[pblk])
+                        ) {
+                            updatedParameterBlocks = true;
+                        }
+                    }
+
+                    if (updatedParameterBlocks) {
+                        logo.deps.refreshCanvas();
+                    }
+                }
+
+                if (isflow) {
+                    // Async yield: periodically yield to the event loop so the
+                    // browser can process paint/input events and the UI does not
+                    // freeze during long-running or infinitely-recursive programs.
+                    logo._syncCounter++;
+                    if (logo._syncCounter >= logo._YIELD_AFTER_SYNC_RUNS) {
+                        logo._syncCounter = 0;
+                        const generation = tur.runGeneration;
+                        logo._timerManager.setGuardedTimeout(
+                            () =>
+                                logo.runFromBlockNow(
+                                    logo,
+                                    turtle,
+                                    nextBlock,
+                                    isflow,
+                                    passArg,
+                                    queueStart
+                                ),
+                            0,
+                            () => logo.stopTurtle || tur.runGeneration !== generation
+                        );
+                        if (profilingEnabled) {
+                            Logo._recordBlockTiming(logo, blk, profilingStart);
+                            tracker.exitBlock();
+                        }
+                        return;
+                    } else {
+                        if (profilingEnabled) {
+                            Logo._recordBlockTiming(logo, blk, profilingStart);
+                            tracker.exitBlock();
+                        }
+                        blk = nextBlock;
+                        receivedArg = passArg;
+                        continue;
+                    }
+                } else {
+                    logo.runFromBlock(logo, turtle, nextBlock, isflow, passArg);
+                    if (profilingEnabled) {
+                        Logo._recordBlockTiming(logo, blk, profilingStart);
+                        tracker.exitBlock();
+                    }
+                    return;
+                }
+            } else if (tur.singer.justCounting.length > 0) {
+                // A note counter's silent run ends here, but the turtle is still
+                // running its program, so only flush the counted flow's signals.
+                if (!logo._prematureRestart) {
+                    logo.dispatchUnissuedSignals(tur);
+                }
+            } else {
+                logo._finishTurtle(logo, turtle, queueStart);
+            }
+
+            if (profilingEnabled) {
+                Logo._recordBlockTiming(logo, blk, profilingStart);
+                tracker.exitBlock();
+            }
+            break;
+        }
+    }
+
+    /**
+     * Marks a turtle whose flow has ended as no longer running and, once no
+     * turtle is running, completes the run.
+     *
+     * @param {Logo} logo - The running Logo instance (always `this`).
+     * @param {number} turtle - Index of the turtle.
+     * @param {number} queueStart - Queue depth the flow was started from.
+     * @returns {void}
+     */
+    _finishTurtle(logo, turtle, queueStart) {
+        const tur = logo.turtles.ithTurtle(turtle);
+
+        logo._alreadyRunning = false;
+
+        if (!logo._prematureRestart) {
+            logo.dispatchUnissuedSignals(tur);
+
+            // Make sure SVG path is closed.
+            logo.turtles.getTurtle(turtle).painter.closeSVG();
+
+            // Mark the turtle as not running.
+            logo.turtles.getTurtle(turtle).running = false;
+            if (!logo.turtles.running() && queueStart === 0) {
+                logo.onStopTurtle();
+            }
+        } else {
+            logo.turtles.getTurtle(turtle).running = false;
+        }
+
+        const comp = logo.turtles.getTurtle(turtle).companionTurtle;
+        if (comp !== null && comp !== undefined) {
+            const compTurtle = logo.turtles.getTurtle(comp);
+            compTurtle.running = false;
+            // Null tur.interval after cancel — mirrors fix at doStopTurtles
+            // (~line 1123) to prevent stale-ID no-op on next Play.
+            if (compTurtle.interval !== undefined) {
+                if (!logo._timerManager.clearInterval(compTurtle.interval)) {
+                    clearInterval(compTurtle.interval);
+                }
+                compTurtle.interval = undefined;
+            }
+        }
+        // Because flow can come from calc blocks, we are not
+        // ensured that the turtle is really finished running
+        // yet. Hence the timeout.
+        const __checkCompletionState = () => {
+            if (logo._exportNotationFinished) {
+                return;
+            }
+
+            if (
+                !logo.turtles.running() &&
+                queueStart === 0 &&
+                tur.singer.justCounting.length === 0
+            ) {
+                // Performance instrumentation: end tracking and log stats.
+                // Looked up again because this runs on a timeout, well
+                // after the lookup at the top of runFromBlockNow.
+                const runTracker = getPerformanceTracker();
+                if (runTracker) {
+                    runTracker.endRun();
+                    runTracker.logStats();
+                }
+
+                if (logo.runningLilypond) {
+                    logo._exportNotationFinished = true;
+                    try {
+                        if (logo.collectingStats) {
+                            logo.projectStats = logo.deps.utils.getStatsFromNotation(logo.activity);
+                            logo.deps.statsWindow.displayInfo(logo.projectStats);
+                        } else {
+                            logo.deps.save.afterSaveLilypond();
+                        }
+                    } catch (e) {
+                        console.error("Error generating Lilypond output: ", e);
+                        logo.deps.errorHandler(
+                            `${_("Error generating Lilypond output.")} ${e.message}`
+                        );
+                    } finally {
+                        logo.collectingStats = false;
+                        logo.runningLilypond = false;
+                        document.body.style.cursor = "default";
+                    }
+                } else if (logo.runningAbc) {
+                    logo._exportNotationFinished = true;
+                    try {
+                        logo.deps.save.afterSaveAbc();
+                    } catch (e) {
+                        console.error("Error generating ABC output: ", e);
+                        logo.deps.errorHandler(`${_("Error generating ABC output.")} ${e.message}`);
+                    } finally {
+                        logo.runningAbc = false;
+                        document.body.style.cursor = "default";
+                    }
+                } else if (logo.runningMxml) {
+                    logo._exportNotationFinished = true;
+                    logo.deps.save.afterSaveMxml();
+                    logo.runningMxml = false;
+                } else if (logo.runningMIDI) {
+                    logo._exportNotationFinished = true;
+                    logo.deps.save.afterSaveMIDI();
+                    logo.runningMIDI = false;
+                } else if (tur.singer.suppressOutput) {
+                    if (!logo.recording) {
+                        logo.deps.errorHandler(_("Playback is ready."));
+                    }
+                } else {
+                    // Record notation data into buffer for later save (Issue #2330)
+                    // This allows saving Lilypond/ABC from interactive sessions
+                    const hasStagedNotation =
+                        logo.notation &&
+                        logo.notation.notationStaging &&
+                        Object.values(logo.notation.notationStaging).some(
+                            staging => Array.isArray(staging) && staging.length > 0
+                        );
+                    if (
+                        hasStagedNotation &&
+                        logo.notationOutput &&
+                        logo.notationOutput.length > 0
+                    ) {
+                        logo.recordingBuffer.hasData = true;
+                        logo.recordingBuffer.notationOutput = logo.notationOutput;
+                        logo.recordingBuffer.notationNotes = JSON.parse(
+                            JSON.stringify(logo.notationNotes)
+                        );
+                        // Copy notation staging data
+                        logo.recordingBuffer.notationStaging = {};
+                        logo.recordingBuffer.notationDrumStaging = {};
+                        for (let t = 0; t < logo.turtles.getTurtleCount(); t++) {
+                            if (logo.notation.notationStaging[t]) {
+                                logo.recordingBuffer.notationStaging[t] = [
+                                    ...logo.notation.notationStaging[t]
+                                ];
+                            }
+                            if (logo.notation.notationDrumStaging[t]) {
+                                logo.recordingBuffer.notationDrumStaging[t] = [
+                                    ...logo.notation.notationDrumStaging[t]
+                                ];
+                            }
+                        }
+                    }
+                }
+
+                // Wait a beat for the last note, then clean up.
+                // Cancel any pending timer from a previous turtle.
+                if (logo._lastNoteTimeout !== null) {
+                    logo._timerManager.clearTimeout(logo._lastNoteTimeout);
+                }
+                logo._lastNoteTimeout = logo._timerManager.setTimeout(() => {
+                    logo._lastNoteTimeout = null;
+                    if (logo.turtles && logo.turtles.running && logo.turtles.running()) {
+                        return;
+                    }
+                    if (logo.turtles && logo.turtles.turtleList) {
+                        for (const t of logo.turtles.turtleList) {
+                            if (logo.turtles && logo.turtles.running && logo.turtles.running()) {
+                                return;
+                            }
+                            if (t && !t.running) {
+                                if (t.singer) {
+                                    t.singer.runningFromEvent = false;
+                                }
+                                logo.dispatchUnissuedSignals(t);
+                            }
+                        }
+                    }
+                    if (logo.turtles && logo.turtles.running && logo.turtles.running()) {
+                        return;
+                    }
+                    if (tur && tur.singer && tur.singer.suppressOutput && logo.recording) {
+                        tur.singer.suppressOutput = false;
+                    }
+                    logo._cleanupAfterCompletion();
+                }, 1000);
+            }
+        };
+
+        logo._timerManager.setTimeout(__checkCompletionState, 100);
+    }
+
+    /**
+     * Dispatches turtle signals to update turtle graphics.
+     *
+     * @async
+     * @param turtle
+     * @param {number} beatValue
+     * @param blk
+     * @param {number} delay
+     * @returns {void}
+     */
+    async dispatchTurtleSignals(turtle, beatValue, blk, delay) {
+        return this._graphicsScheduler.schedule(turtle, beatValue, blk, delay);
+    }
+
+    /**
+     * Executes plugin-provided block code in a sandboxed manner.
+     *
+     * Plugins may supply either a pre-compiled function or a legacy string of
+     * JavaScript.  Functions are called directly inside a try/catch.  Strings
+     * are matched against an allowlist of known-safe math patterns (see
+     * `mathPatterns` below) and executed natively; all other string code is
+     * blocked to prevent arbitrary eval injection (security fix for #5449).
+     *
+     * @param {Function|string} code - Plugin code: a callable or a legacy JS
+     *     string from a plugin definition file (e.g. maths.json).
+     * @param {Logo} logo - The running Logo instance.
+     * @param {number} turtle - Index of the active turtle.
+     * @param {number} blk - Index of the block being evaluated.
+     * @param {*} value - Context value forwarded to the plugin (e.g. the
+     *     current block value for setter blocks).
+     * @param {...*} args - Additional arguments forwarded verbatim to function
+     *     plugins.
+     * @returns {*} The plugin's return value, or `undefined` for void or
+     *     blocked calls.
+     */
+    safePluginExecute(code, logo, turtle, blk, value, receivedArg, ...args) {
+        if (typeof code === "function") {
+            try {
+                return code(logo, turtle, blk, value, receivedArg, ...args);
+            } catch (e) {
+                console.error("Plugin function execution failed: ", e);
+                return;
+            }
+        }
+
+        if (typeof code !== "string") {
+            return;
+        }
+
+        // Whitelist for common, safe math patterns used by plugins (e.g. maths.json)
+        // These are checked against the exact string format used in built-in plugins.
+        const mathPatterns = [
+            {
+                // Unary Math operations (Math.sin, etc.)
+                regex: /^const mathBlock = globalActivity\.logo\.blockList\[blk\];const conns = mathBlock\.connections;mathBlock\.value = Math\.(sin|cos|tan|asin|acos|atan|sqrt|log|exp|abs|ceil|floor|round)\(logo\.parseArg\(logo, turtle, conns\[1\]\)\);$/,
+                exec: match => {
+                    const op = match[1];
+                    const mathBlock = logo.blockList[blk];
+                    const conns = mathBlock.connections;
+                    mathBlock.value = Math[op](
+                        logo.parseArg(logo, turtle, conns[1], blk, receivedArg)
+                    );
+                    return mathBlock.value;
+                }
+            },
+            {
+                // Binary Math operations (Math.pow)
+                regex: /^const mathBlock = globalActivity\.logo\.blockList\[blk\];const conns = mathBlock\.connections;var base = logo\.parseArg\(logo, turtle, conns\[1\]\);var exp {2}= logo\.parseArg\(logo, turtle, conns\[2\]\);mathBlock\.value = Math\.pow\(base, exp\);$/,
+                exec: () => {
+                    const mathBlock = logo.blockList[blk];
+                    const conns = mathBlock.connections;
+                    const base = logo.parseArg(logo, turtle, conns[1], blk, receivedArg);
+                    const exp = logo.parseArg(logo, turtle, conns[2], blk, receivedArg);
+                    mathBlock.value = Math.pow(base, exp);
+                    return mathBlock.value;
+                }
+            },
+            {
+                // Unit conversion operations (degrees and radians in maths.json)
+                regex: /^const mathBlock = globalActivity\.logo\.blockList\[blk\];const conns = mathBlock\.connections;mathBlock\.value = logo\.parseArg\(logo, turtle, conns\[1\]\) \* \((180\/Math\.PI|Math\.PI\/180)\);$/,
+                exec: match => {
+                    const mathBlock = logo.blockList[blk];
+                    const conns = mathBlock.connections;
+                    const factor = match[1] === "180/Math.PI" ? 180 / Math.PI : Math.PI / 180;
+                    mathBlock.value =
+                        logo.parseArg(logo, turtle, conns[1], blk, receivedArg) * factor;
+                    return mathBlock.value;
+                }
+            },
+            {
+                // Math Constants (Math.PI, Math.E)
+                regex: /^const mathBlock = globalActivity\.logo\.blockList\[blk\];const conns = mathBlock\.connections;mathBlock\.value = Math\.(PI|E);$/,
+                exec: match => {
+                    const constName = match[1];
+                    const mathBlock = logo.blockList[blk];
+                    mathBlock.value = Math[constName];
+                    return mathBlock.value;
+                }
+            },
+            {
+                // Parameter plugin patterns (simple assignment)
+                regex: /^logo\.blockList\[blk\]\.value = Math\.(PI|E);$/,
+                exec: match => {
+                    const constName = match[1];
+                    logo.blockList[blk].value = Math[constName];
+                    return logo.blockList[blk].value;
+                }
+            }
+        ];
+
+        for (const pattern of mathPatterns) {
+            const match = code.match(pattern.regex);
+            if (match) {
+                return pattern.exec(match);
+            }
+        }
+
+        // If not a function and not whitelisted, we block arbitrary string execution (eval).
+        // This is the core of the security fix for #5449.
+        console.warn(
+            "Blocked arbitrary JavaScript execution in plugin:",
+            code.substring(0, 100) + "..."
+        );
+    }
+}
+
+Logo._stepItemPool = [];
+
+Logo._obtainStepItem = function _obtainStepItem(blk, isflow, receivedArg) {
+    if (Logo._stepItemPool.length > 0) {
+        const item = Logo._stepItemPool.pop();
+        item.blk = blk;
+        item.isflow = isflow;
+        item.receivedArg = receivedArg;
+        return item;
+    }
+    return { blk, isflow, receivedArg };
+};
+
+Logo._recycleStepItem = function _recycleStepItem(item) {
+    if (item && typeof item === "object" && Logo._stepItemPool.length < 128) {
+        item.receivedArg = null;
+        Logo._stepItemPool.push(item);
+    }
+};
+
+Logo._recordBlockTiming = function _recordBlockTiming(logo, blk, profilingStart) {
+    if (profilingStart === null) return;
+    try {
+        const endTime =
+            typeof performance !== "undefined" && typeof performance.now === "function"
+                ? performance.now()
+                : Date.now();
+        const elapsed = endTime - profilingStart;
+        const blockRef = logo.blockList && logo.blockList[blk];
+        const blockName = blockRef && blockRef.name ? blockRef.name : "unknown";
+
+        if (!logo.blockTimings[blockName]) {
+            logo.blockTimings[blockName] = { calls: 0, total: 0, max: 0 };
+        }
+
+        const entry = logo.blockTimings[blockName];
+        entry.calls += 1;
+        entry.total += elapsed;
+        if (elapsed > entry.max) {
+            entry.max = elapsed;
+        }
+    } catch (e) {
+        const tracker = getPerformanceTracker();
+        if (tracker && typeof tracker.disable === "function") {
+            tracker.disable();
+        }
+    }
+};
+
+// Export Logo
+if (typeof define === "function" && define.amd) {
+    define([], function () {
+        return Logo;
+    });
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    let exportsObj = { Logo, Queue };
+
+    // In Node.js / Jest environment, we need to include constants
+    if (typeof DEFAULTVOLUME === "undefined") {
+        try {
+            const constants = require("./logoconstants");
+            Object.assign(exportsObj, constants);
+        } catch (e) {
+            // Ignore
+        }
+    } else {
+        // If they are already global (e.g. via logoconstants.js loaded before)
+        exportsObj = Object.assign(exportsObj, {
+            DEFAULTVOLUME,
+            PREVIEWVOLUME,
+            DEFAULTDELAY,
+            OSCVOLUMEADJUSTMENT,
+            TONEBPM,
+            TARGETBPM,
+            TURTLESTEP,
+            NOTEDIV,
+            NOMICERRORMSG,
+            NANERRORMSG,
+            NOSTRINGERRORMSG,
+            NOBOXERRORMSG,
+            NOACTIONERRORMSG,
+            NOINPUTERRORMSG,
+            NOSQRTERRORMSG,
+            ZERODIVIDEERRORMSG,
+            EMPTYHEAPERRORMSG,
+            POSNUMBER,
+            NOTATIONNOTE,
+            NOTATIONDURATION,
+            NOTATIONDOTCOUNT,
+            NOTATIONTUPLETVALUE,
+            NOTATIONROUNDDOWN,
+            NOTATIONINSIDECHORD,
+            NOTATIONSTACCATO
+        });
+    }
+
+    module.exports = exportsObj;
+}
+
+if (typeof window !== "undefined") {
+    window.Logo = Logo;
+    window.Queue = Queue;
+}

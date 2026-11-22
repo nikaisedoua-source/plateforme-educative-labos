@@ -1,0 +1,718 @@
+// Copyright (c) 2023-24 Mubashirshariq
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+// Midi Importer
+
+/* exported  transcribeMidi*/
+
+// A MIDI file with no tempo event plays at 120 beats per minute, the MIDI default, which is
+// also the tempo @tonejs/midi assumes when it times the file's notes.
+const defaultTempo = 120;
+
+// Note values an imported note can take, in whole notes. Plain values come first, so a length
+// exactly between two values keeps the plain one. Dotted values stop at 3/32 and triplets at
+// 1/12: shorter ones sit so close to the plain values that a note played slightly short, or the
+// 0.01 s rounding of note times, would snap it to the wrong one.
+const standardDurations = [
+    { value: "1/1", duration: 1 },
+    { value: "1/2", duration: 0.5 },
+    { value: "1/4", duration: 0.25 },
+    { value: "1/8", duration: 0.125 },
+    { value: "1/16", duration: 0.0625 },
+    { value: "1/32", duration: 0.03125 },
+    { value: "1/64", duration: 0.015625 },
+    { value: "1/128", duration: 0.0078125 },
+    // dotted
+    { value: "3/2", duration: 1.5 },
+    { value: "3/4", duration: 0.75 },
+    { value: "3/8", duration: 0.375 },
+    { value: "3/16", duration: 0.1875 },
+    { value: "3/32", duration: 0.09375 },
+    // triplets
+    { value: "1/3", duration: 1 / 3 },
+    { value: "1/6", duration: 1 / 6 },
+    { value: "1/12", duration: 1 / 12 }
+];
+
+/**
+ * Splits a MIDI note name into its pitch and octave, e.g. "C#4" into ["C#", 4]. The octave can
+ * be negative: MIDI notes 0 to 11 are in octave -1.
+ * @param {string} name
+ * @returns {[string, number]}
+ */
+const splitNoteName = name => {
+    const match = /^(.*?)(-?\d+)$/.exec(name);
+    return match
+        ? [match[1], parseInt(match[2], 10)]
+        : [name.substring(0, name.length - 1), parseInt(name[name.length - 1], 10)];
+};
+
+const getClosestStandardNoteValue = duration => {
+    let closest = standardDurations[0];
+    let minDiff = Math.abs(duration - closest.duration);
+
+    for (let i = 1; i < standardDurations.length; i++) {
+        const diff = Math.abs(duration - standardDurations[i].duration);
+        if (diff < minDiff) {
+            closest = standardDurations[i];
+            minDiff = diff;
+        }
+    }
+
+    return closest.value.split("/").map(Number);
+};
+
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+
+// A length no single value fits within a thirty-second note, such as a tied note or a rest of
+// several bars, is written as the largest plain value that fits plus the value of the rest.
+const getNoteValue = length => {
+    const error = ([n, d]) => Math.abs(n / d - length);
+    const closest = getClosestStandardNoteValue(length);
+    if (length <= 1 / 128 || error(closest) <= 1 / 32) return closest;
+
+    const plain = length >= 1 ? [Math.floor(length), 1] : [1, 2 ** Math.ceil(-Math.log2(length))];
+    const [n, d] = getNoteValue(length - plain[0] / plain[1]);
+    const numerator = plain[0] * d + n * plain[1];
+    const denominator = plain[1] * d;
+    const divisor = gcd(numerator, denominator);
+    const tied = [numerator / divisor, denominator / divisor];
+    return error(tied) < error(plain) ? tied : plain;
+};
+
+/**
+ * Seconds at a tick under MIDI timing, where 120 beats per minute applies until the first
+ * tempo event.
+ * @param {number} ticks
+ * @param {Array<{ticks: number, bpm: number}>} tempos - midi.header.tempos, in tick order
+ * @param {number} ppq - ticks per quarter note
+ * @returns {number}
+ */
+const midiTicksToSeconds = (ticks, tempos, ppq) => {
+    let seconds = 0;
+    let lastTicks = 0;
+    let bpm = defaultTempo;
+    for (const tempo of tempos) {
+        if (tempo.ticks >= ticks) break;
+        seconds += ((tempo.ticks - lastTicks) / ppq) * (60 / bpm);
+        lastTicks = tempo.ticks;
+        bpm = tempo.bpm;
+    }
+    return seconds + ((ticks - lastTicks) / ppq) * (60 / bpm);
+};
+
+class MidiTranscriber {
+    constructor(midi, maxNoteBlocks) {
+        this.midi = midi;
+        this.maxNoteBlocks = maxNoteBlocks;
+        this.drumMidi = typeof getReverseDrumMidi !== "undefined" ? getReverseDrumMidi() : {};
+        this.isPercussion = [];
+        this.jsONON = [];
+        this.actionBlockCounter = 0;
+        this.actionBlockNames = [];
+        this.totalnoteblockCount = 0;
+        this.noteblockCount = 0;
+        this.shortestNoteDenominator = 0;
+        this.offset = 100;
+        this.stopProcessing = false;
+        this.trackCount = 0;
+        this.actionBlockPerTrack = [];
+        this.instruments = [];
+        this.trackNames = [];
+
+        this.tempos = this.midi.header.tempos || [];
+        // The project plays at the tempo in force when the file starts, which is 120 bpm until
+        // the first tempo event.
+        this.firstTempoIsDelayed = this.tempos.length > 0 && this.tempos[0].ticks > 0;
+        this.currentMidiTempoBpm =
+            this.tempos.length > 0 && !this.firstTempoIsDelayed
+                ? Math.round(this.tempos[0].bpm)
+                : defaultTempo;
+
+        const defaultTimeSignature = [4, 4];
+        this.currentMidiTimeSignature = this.midi.header.timeSignatures;
+        if (this.currentMidiTimeSignature && this.currentMidiTimeSignature.length > 0) {
+            this.currentMidiTimeSignature = this.currentMidiTimeSignature[0].timeSignature;
+        } else {
+            this.currentMidiTimeSignature = defaultTimeSignature;
+        }
+
+        // Tempo segments in seconds, each covering [start, next segment's start). Lets a note
+        // be notated against the tempo actually in force when it plays, instead of always the
+        // file's starting tempo; see tempoSegmentIndexAt().
+        this.tempoSegments = this.buildTempoSegments();
+    }
+
+    buildTempoSegments() {
+        const ppq = this.midi.header.ppq;
+        const segments = [];
+        if (this.tempos.length === 0) {
+            segments.push({ start: 0, bpm: defaultTempo });
+            return segments;
+        }
+        if (this.firstTempoIsDelayed) {
+            segments.push({ start: 0, bpm: defaultTempo });
+        }
+        for (const tempo of this.tempos) {
+            segments.push({
+                start: Math.round(midiTicksToSeconds(tempo.ticks, this.tempos, ppq) * 100) / 100,
+                bpm: Math.round(tempo.bpm)
+            });
+        }
+        return segments;
+    }
+
+    // Index into this.tempoSegments of the tempo in force at a given point in the file.
+    tempoSegmentIndexAt(seconds) {
+        let idx = 0;
+        for (let i = 0; i < this.tempoSegments.length; i++) {
+            if (this.tempoSegments[i].start > seconds + 1e-9) break;
+            idx = i;
+        }
+        return idx;
+    }
+
+    // Every note and rest is written relative to the tempo passed in, which the caller picks
+    // per note so notation reads correctly on both sides of a tempo change (see
+    // tempoSegmentIndexAt()); playback timing is unaffected since it comes from the MIDI file's
+    // own tempo map, not from this.
+    wholeNotesAt(seconds, bpm = this.currentMidiTempoBpm) {
+        return (seconds * bpm) / 240;
+    }
+
+    // @tonejs/midi times notes before a delayed first tempo event at 120 bpm, but times the
+    // event itself as if its tempo applied from the start, shifting every note after it. For
+    // such files notes are timed from their ticks instead.
+    noteSeconds(note) {
+        return this.firstTempoIsDelayed && Number.isFinite(note.ticks)
+            ? [
+                  midiTicksToSeconds(note.ticks, this.tempos, this.midi.header.ppq),
+                  midiTicksToSeconds(
+                      note.ticks + note.durationTicks,
+                      this.tempos,
+                      this.midi.header.ppq
+                  )
+              ]
+            : [note.time, note.time + note.duration];
+    }
+
+    buildSchedules(track) {
+        // Only notes with the same onset AND release form a chord. Slicing at every
+        // other note's boundary would turn a held pitch into several new attacks.
+        const chords = new Map();
+        for (const note of track.notes) {
+            const [noteStart, noteEnd] = this.noteSeconds(note);
+            const start = Math.round(noteStart * 100) / 100;
+            const end = Math.round(noteEnd * 100) / 100;
+            if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
+                continue;
+            }
+            const key = `${start}:${end}`;
+            if (!chords.has(key)) chords.set(key, { start, end, notes: [] });
+            chords.get(key).notes.push(note);
+        }
+
+        const schedules = [];
+        const ordered = [...chords.values()].sort((a, b) => a.start - b.start || b.end - a.end);
+        for (const chord of ordered) {
+            // Reuse a voice only once its previous note has ended. Every voice starts
+            // at time zero, with explicit rests for delayed entries and later gaps.
+            let schedule = schedules.find(voice => voice[voice.length - 1].end <= chord.start);
+            if (!schedule) {
+                schedule = [];
+                schedules.push(schedule);
+            }
+            const previousEnd = schedule.length ? schedule[schedule.length - 1].end : 0;
+            if (chord.start > previousEnd) {
+                schedule.push({ start: previousEnd, end: chord.start, notes: [{ name: "R" }] });
+            }
+            schedule.push(chord);
+        }
+        return schedules;
+    }
+
+    noteValueForInterval(seconds, bpm, preserveDuration) {
+        if (!preserveDuration) return getClosestStandardNoteValue(this.wholeNotesAt(seconds, bpm));
+        // Independent voices must keep a common clock. Quantising each voice's rests
+        // separately would shift its later attacks relative to the sustained voice.
+        // Schedule boundaries use centiseconds and tempo segments use integer BPM.
+        const numerator = Math.round(seconds * 100) * bpm;
+        const denominator = 24000;
+        let a = numerator;
+        let b = denominator;
+        while (b !== 0) [a, b] = [b, a % b];
+        return [numerator / a, denominator / a];
+    }
+
+    atNoteLimit() {
+        if (this.stopProcessing) return true;
+        if (this.totalnoteblockCount < this.maxNoteBlocks || this.maxNoteBlocks === undefined) {
+            return false;
+        }
+        this.stopProcessing = true;
+        if (typeof activity !== "undefined" && activity.textMsg) {
+            activity.textMsg(
+                `MIDI file is too large. Generating only ${this.maxNoteBlocks} noteblocks`
+            );
+        }
+        return true;
+    }
+
+    getPitch(x, notes, prev, isPercussionTrack) {
+        const ar = [];
+        if (notes[0].name === "R") {
+            ar.push([x, "rest2", 0, 0, [prev, null]]);
+        } else if (isPercussionTrack) {
+            for (let i = 0; i < notes.length; i++) {
+                const drumname = this.drumMidi[notes[i].midi]?.[0] || "kick drum";
+                ar.push(
+                    [
+                        x,
+                        "playdrum",
+                        0,
+                        0,
+                        [i === 0 ? prev : x - 2, x + 1, i === notes.length - 1 ? null : x + 2]
+                    ],
+                    [x + 1, ["drumname", { value: drumname }], 0, 0, [x]]
+                );
+                x += 2;
+            }
+        } else {
+            for (let na = 0; na < notes.length; na++) {
+                const [pitchName, octave] = splitNoteName(notes[na].name);
+                const first = na === 0;
+                const last = na === notes.length - 1;
+                ar.push(
+                    [x, "pitch", 0, 0, [first ? prev : x - 3, x + 1, x + 2, last ? null : x + 3]],
+                    [x + 1, ["notename", { value: pitchName }], 0, 0, [x]],
+                    [x + 2, ["number", { value: octave }], 0, 0, [x]]
+                );
+                x += 3;
+            }
+        }
+        return ar;
+    }
+
+    processTrack(track, sched, trackName, preserveDuration) {
+        let k = 0;
+        if (!sched.length || this.atNoteLimit()) return;
+        this.noteblockCount = 0;
+        this.trackNames[this.trackCount] = trackName;
+        const r = this.jsONON.length;
+        const isPercussionTrack =
+            track.instrument.percussion && (track.channel === 9 || track.channel === 10);
+        let instrument = "electronic synth";
+        if (track.instrument.name && !track.instrument.percussion) {
+            if (typeof VOICENAMES !== "undefined") {
+                for (const voices of VOICENAMES) {
+                    if (track.instrument.name.indexOf(voices[1]) > -1) {
+                        instrument = voices[0];
+                    }
+                }
+            }
+        }
+        this.actionBlockPerTrack[this.trackCount] = 0;
+        this.instruments[this.trackCount] = instrument;
+
+        const actionBlockName = `track${this.trackCount}chunk${this.actionBlockCounter}`;
+
+        this.jsONON.push(
+            [r, ["action", { collapsed: false }], 150, 100, [null, r + 1, r + 2, null]],
+            [r + 1, ["text", { value: actionBlockName }], 0, 0, [r]]
+        );
+
+        this.isPercussion.push(isPercussionTrack);
+
+        let noteSum = 0;
+        let currentActionBlock = [];
+        // Index into this.tempoSegments already reflected in this track's block flow. Starts
+        // at 0: finalizeTracks() always writes one setbpm3 for the file's starting tempo,
+        // shared by every track, before any of this runs.
+        let appliedTempoIndex = 0;
+        // Seconds the written notes play for. Each note runs up to where the file's note ends,
+        // at the tempo it plays at, so rounding never adds up.
+        let written = 0;
+
+        const addNewActionBlock = (isLastBlock = false) => {
+            const r = this.jsONON.length;
+            const actionBlockName = `track${this.trackCount}chunk${this.actionBlockCounter}`;
+            this.actionBlockNames.push(actionBlockName);
+            this.actionBlockPerTrack[this.trackCount]++;
+            if (k === 0) {
+                this.jsONON.push(...currentActionBlock);
+                k = 1;
+            } else {
+                const settimbreIndex = r;
+                // Adjust the first note block's top connection to settimbre
+                currentActionBlock[0][4][0] = settimbreIndex;
+                this.jsONON.push(
+                    [
+                        r,
+                        ["action", { collapsed: false }],
+                        100 + this.offset,
+                        100 + this.offset,
+                        [null, r + 1, settimbreIndex + 2, null]
+                    ],
+                    [r + 1, ["text", { value: actionBlockName }], 0, 0, [r]],
+                    ...currentActionBlock
+                );
+            }
+            if (isLastBlock) {
+                const lastIndex = this.jsONON.length - 1;
+                // Set the last hidden block's second value to null
+                this.jsONON[lastIndex][4][1] = null;
+            }
+
+            currentActionBlock = [];
+            this.actionBlockCounter++;
+            this.offset += 100;
+        };
+        //Using for loop for finding the shortest note value
+        for (const j in sched) {
+            const segBpm = this.tempoSegments[this.tempoSegmentIndexAt(sched[j].start)].bpm;
+            const temp = getClosestStandardNoteValue(
+                this.wholeNotesAt(sched[j].end - sched[j].start, segBpm)
+            );
+            this.shortestNoteDenominator = Math.max(this.shortestNoteDenominator, temp[1]);
+        }
+
+        // Indexed loop, not `for...in`: `for...in` yields string keys, so the
+        // `i === 0` and `i === sched.length - 1` comparisons below would never
+        // be true and every note would be treated as neither first nor last.
+        for (let i = 0; i < sched.length; i++) {
+            if (this.stopProcessing) break; // Exit inner loop if flag is set
+            const { notes, start, end } = sched[i];
+            const duration = end - start;
+            noteSum += duration;
+            const isLastNoteInBlock =
+                noteSum >= 16 || (this.noteblockCount > 0 && this.noteblockCount % 24 === 0);
+
+            if (this.atNoteLimit()) break;
+
+            const isLastNoteInSched = i === sched.length - 1;
+            const last = isLastNoteInBlock || isLastNoteInSched;
+            const first = i === 0;
+
+            // Since we are going to add action block in the front later
+            let baseIdx = this.jsONON.length + currentActionBlock.length;
+            if (k !== 0) baseIdx = baseIdx + 2;
+            let prevForNote = first ? baseIdx - 2 : baseIdx - 1;
+
+            // Splice a setbpm3 chunk in before this note if the tempo changed since the last
+            // one, so notation reads at the tempo actually in force (playback timing already
+            // follows the file's own tempo map via noteSeconds()/buildSchedules(), unaffected
+            // by this). jsONON is append-only, so later indices just shift to make room; no
+            // renumbering of already-pushed blocks is needed.
+            const segIndex = this.tempoSegmentIndexAt(start);
+            let tempoVspaceEntry = null;
+            if (segIndex !== appliedTempoIndex) {
+                const tempoBase = baseIdx;
+                const tempoBpm = this.tempoSegments[segIndex].bpm;
+                currentActionBlock.push(
+                    [
+                        tempoBase,
+                        ["setbpm3"],
+                        0,
+                        0,
+                        [prevForNote, tempoBase + 1, tempoBase + 2, tempoBase + 5]
+                    ],
+                    // A MIDI tempo counts quarter notes per minute, while this block counts
+                    // beats of the time signature's note value (see MeterActions.setBPM).
+                    [
+                        tempoBase + 1,
+                        ["number", { value: (tempoBpm * this.currentMidiTimeSignature[1]) / 4 }],
+                        0,
+                        0,
+                        [tempoBase]
+                    ],
+                    [tempoBase + 2, "divide", 0, 0, [tempoBase, tempoBase + 3, tempoBase + 4]],
+                    [tempoBase + 3, ["number", { value: 1 }], 0, 0, [tempoBase + 2]],
+                    [
+                        tempoBase + 4,
+                        ["number", { value: this.currentMidiTimeSignature[1] }],
+                        0,
+                        0,
+                        [tempoBase + 2]
+                    ],
+                    [tempoBase + 5, "vspace", 0, 0, [tempoBase, null]]
+                );
+                tempoVspaceEntry = currentActionBlock[currentActionBlock.length - 1];
+                prevForNote = tempoBase + 5;
+                appliedTempoIndex = segIndex;
+            }
+
+            // currentActionBlock may have just grown by the tempo chunk above, so this note's
+            // own index is computed fresh here rather than reusing baseIdx.
+            let val = this.jsONON.length + currentActionBlock.length;
+            if (k !== 0) val = val + 2;
+            if (tempoVspaceEntry) tempoVspaceEntry[4][1] = val;
+
+            const bpm = this.tempoSegments[segIndex].bpm;
+            const obj = preserveDuration
+                ? this.noteValueForInterval(duration, bpm, true)
+                : getNoteValue(this.wholeNotesAt(end - written, bpm));
+            if (!preserveDuration) written += (obj[0] / obj[1]) * (240 / bpm);
+
+            const pitches = this.getPitch(val + 5, notes, val, isPercussionTrack);
+            currentActionBlock.push(
+                [
+                    val,
+                    ["newnote", { collapsed: true }],
+                    0,
+                    0,
+                    [prevForNote, val + 1, val + 4, val + pitches.length + 5]
+                ],
+                [val + 1, "divide", 0, 0, [val, val + 2, val + 3]],
+                [val + 2, ["number", { value: obj[0] }], 0, 0, [val + 1]],
+                [val + 3, ["number", { value: obj[1] }], 0, 0, [val + 1]],
+                [val + 4, "vspace", 0, 0, [val, val + 5]]
+            );
+            this.noteblockCount++;
+            this.totalnoteblockCount++;
+            pitches[0][4][0] = val + 4;
+            currentActionBlock = currentActionBlock.concat(pitches);
+
+            let newLen = this.jsONON.length + currentActionBlock.length;
+            if (k !== 0) newLen = newLen + 2;
+            currentActionBlock.push([newLen, "hidden", 0, 0, [val, last ? null : newLen + 1]]);
+            if (isLastNoteInBlock || isLastNoteInSched) {
+                addNewActionBlock(isLastNoteInSched);
+            }
+
+            if (isLastNoteInBlock) {
+                this.noteblockCount = 0;
+                noteSum = 0;
+            }
+        }
+
+        if (currentActionBlock.length > 0) {
+            addNewActionBlock(true);
+        }
+
+        this.trackCount++;
+        if (typeof document !== "undefined" && document.body) {
+            document.body.style.cursor = "wait";
+        }
+    }
+
+    finalizeTracks() {
+        const len = this.jsONON.length;
+        let m = 0;
+        let actionIndex = 0;
+
+        for (let i = 0; i < this.trackCount; i++) {
+            const vspaceIndex = len + m + 6;
+            const startIndex = len + m;
+            let flag = true;
+
+            if (this.isPercussion[i]) {
+                this.jsONON.push(
+                    [
+                        len + m,
+                        ["start", { collapsed: false }],
+                        300 + this.offset,
+                        100,
+                        [null, len + m + 14 + this.actionBlockPerTrack[i], null]
+                    ],
+                    [
+                        len + m + 1,
+                        "meter",
+                        0,
+                        0,
+                        [
+                            len + m + 14 + this.actionBlockPerTrack[i],
+                            len + m + 2,
+                            len + m + 3,
+                            len + m + 6
+                        ]
+                    ],
+                    [
+                        len + m + 2,
+                        ["number", { value: this.currentMidiTimeSignature[0] }],
+                        0,
+                        0,
+                        [len + m + 1]
+                    ],
+                    [len + m + 3, "divide", 0, 0, [len + m + 1, len + m + 4, len + m + 5]],
+                    [len + m + 4, ["number", { value: 1 }], 0, 0, [len + m + 3]],
+                    [
+                        len + m + 5,
+                        ["number", { value: this.currentMidiTimeSignature[1] }],
+                        0,
+                        0,
+                        [len + m + 3]
+                    ],
+                    [
+                        len + m + 6,
+                        "vspace",
+                        0,
+                        0,
+                        [len + m + 1, len + m + 8 + this.actionBlockPerTrack[i]]
+                    ],
+                    [
+                        len + m + 7,
+                        "hidden",
+                        0,
+                        0,
+                        [len + m + 13 + this.actionBlockPerTrack[i], len + m + 8]
+                    ]
+                );
+                flag = false;
+                m += 8;
+            } else {
+                this.jsONON.push(
+                    [
+                        len + m,
+                        ["start", { collapsed: false }],
+                        300 + this.offset,
+                        100,
+                        [null, len + m + 16 + this.actionBlockPerTrack[i], null]
+                    ],
+                    [
+                        len + m + 1,
+                        "meter",
+                        0,
+                        0,
+                        [
+                            len + m + 16 + this.actionBlockPerTrack[i],
+                            len + m + 2,
+                            len + m + 3,
+                            len + m + 6
+                        ]
+                    ],
+                    [
+                        len + m + 2,
+                        ["number", { value: this.currentMidiTimeSignature[0] }],
+                        0,
+                        0,
+                        [len + m + 1]
+                    ],
+                    [len + m + 3, "divide", 0, 0, [len + m + 1, len + m + 4, len + m + 5]],
+                    [len + m + 4, ["number", { value: 1 }], 0, 0, [len + m + 3]],
+                    [
+                        len + m + 5,
+                        ["number", { value: this.currentMidiTimeSignature[1] }],
+                        0,
+                        0,
+                        [len + m + 3]
+                    ],
+                    [
+                        len + m + 6,
+                        "vspace",
+                        0,
+                        0,
+                        [len + m + 1, len + m + 10 + this.actionBlockPerTrack[i]]
+                    ],
+                    [
+                        len + m + 7,
+                        "settimbre",
+                        0,
+                        0,
+                        [
+                            len + m + 15 + this.actionBlockPerTrack[i],
+                            len + m + 8,
+                            len + m + 10,
+                            len + m + 9
+                        ]
+                    ],
+                    [
+                        len + m + 8,
+                        ["voicename", { value: this.instruments[i] }],
+                        0,
+                        0,
+                        [len + m + 7]
+                    ],
+                    [len + m + 9, "hidden", 0, 0, [len + m + 7, null]]
+                );
+                m += 10;
+            }
+
+            for (let j = 0; j < this.actionBlockPerTrack[i]; j++) {
+                this.jsONON.push([
+                    len + m,
+                    ["nameddo", { value: this.actionBlockNames[actionIndex] }],
+                    0,
+                    0,
+                    [flag ? len + m - 3 : len + m - 1, len + m + 1]
+                ]);
+                m++;
+                flag = false;
+                actionIndex++;
+            }
+            this.jsONON[len + m - 1][4][1] = null;
+            const setBpmIndex = this.jsONON.length;
+            this.jsONON.push(
+                [
+                    setBpmIndex,
+                    ["setbpm3"],
+                    0,
+                    0,
+                    [vspaceIndex, setBpmIndex + 1, setBpmIndex + 2, setBpmIndex + 5]
+                ],
+                // A MIDI tempo counts quarter notes per minute, while this block counts beats
+                // of the time signature's note value (see MeterActions.setBPM).
+                [
+                    setBpmIndex + 1,
+                    [
+                        "number",
+                        { value: (this.currentMidiTempoBpm * this.currentMidiTimeSignature[1]) / 4 }
+                    ],
+                    0,
+                    0,
+                    [setBpmIndex]
+                ],
+                [setBpmIndex + 2, "divide", 0, 0, [setBpmIndex, setBpmIndex + 3, setBpmIndex + 4]],
+                [setBpmIndex + 3, ["number", { value: 1 }], 0, 0, [setBpmIndex + 2]],
+                [
+                    setBpmIndex + 4,
+                    ["number", { value: this.currentMidiTimeSignature[1] }],
+                    0,
+                    0,
+                    [setBpmIndex + 2]
+                ],
+                [setBpmIndex + 5, "vspace", 0, 0, [setBpmIndex, vspaceIndex + 1]]
+            );
+            m += 6;
+            this.jsONON.push(
+                [len + m, "setturtlename2", 0, 0, [startIndex, len + m + 1, startIndex + 1]],
+                [len + m + 1, ["text", { value: this.trackNames[i] }], 0, 0, [len + m]]
+            );
+            m += 2;
+        }
+    }
+
+    async transcribe() {
+        this.midi.tracks.forEach((track, trackIndex) => {
+            const schedules = this.buildSchedules(track);
+            schedules.forEach((schedule, voiceIndex) => {
+                const name =
+                    `track${trackIndex}` + (schedules.length > 1 ? ` voice ${voiceIndex + 1}` : "");
+                this.processTrack(track, schedule, name, schedules.length > 1);
+            });
+        });
+
+        this.finalizeTracks();
+
+        if (typeof activity !== "undefined" && activity.blocks) {
+            activity.blocks.loadNewBlocks(this.jsONON);
+        }
+        return null;
+    }
+}
+
+const transcribeMidi = async (midi, maxNoteBlocks) => {
+    const transcriber = new MidiTranscriber(midi, maxNoteBlocks);
+    return transcriber.transcribe();
+};
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { getClosestStandardNoteValue, transcribeMidi };
+}

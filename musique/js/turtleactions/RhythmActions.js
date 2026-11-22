@@ -1,0 +1,548 @@
+/**
+ * @file This contains the action methods of the Turtle's Singer component's Rhythm blocks.
+ * @author Anindya Kundu
+ * @author Walter Bender
+ *
+ * @copyright 2014-2021 Walter Bender
+ * @copyright 2020 Anindya Kundu
+ *
+ * @license
+ * This program is free software; you can redistribute it and/or modify it under the terms of the
+ * The GNU Affero General Public License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ * You should have received a copy of the GNU Affero General Public License along with this
+ * library; if not, write to the Free Software Foundation, 51 Franklin Street, Suite 500 Boston,
+ * MA 02110-1335 USA.
+ */
+
+/* global _, Singer, MusicBlocks, Mouse, last, TONEBPM, getMeasurePosition */
+
+/*
+   Global Locations
+    js/utils/utils.js
+        _, last
+    js/turtle-singer.js
+        Singer
+    js/logo.js
+        TONEBPM
+    js/utils/musicutils-rhythm.js
+        getMeasurePosition
+    js/js-export/export.js
+        MusicBlocks, Mouse
+*/
+
+/* exported setupRhythmActions */
+
+/**
+ * Sets up all the methods related to different actions for each block in Rhythm palette.
+ * @returns {void}
+ */
+function setupRhythmActions(activity) {
+    Singer.RhythmActions = class {
+        /**
+         * "note" block, "milliseconds" block.
+         * Processes and plays a note clamp.
+         *
+         * @static
+         * @param {Number} value - note value
+         * @param {String} blkName - note block type name
+         * @param {Object} turtle - Turtle object
+         * @param {Object} blk - corresponding Block object index in blocks.blockList or custom block number
+         * @returns {void}
+         */
+        static playNote(value, blkName, turtle, blk) {
+            /**
+             * The interpreter queues the child flow of the note clamp from the flow block's
+             * `[childFlow, 1]` return value and, once all of the children are run, triggers a
+             * _playnote_ event, then waits for the note to play. The note can be specified
+             * by pitch or synth blocks. The osctime block specifies the duration in milleseconds
+             * while the note block specifies duration as a beat value.
+             *
+             * @todo We should consider the use of the global timer in Tone.js for more accuracy.
+             */
+
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            // Use the outer most note when nesting to determine the beat and triggering
+            if (tur.singer.inNoteBlock.length === 0) {
+                const {
+                    beat: beatValue,
+                    measure: measureValue,
+                    beats: beatsPlayed
+                } = getMeasurePosition(
+                    tur.singer,
+                    tur.singer.notesPlayed[0] / tur.singer.notesPlayed[1]
+                );
+
+                tur.singer.currentBeat = beatValue;
+                tur.singer.currentMeasure = measureValue;
+
+                /**
+                 * Dispatch any beat actions (everybeat / on-beat / offbeat / every-beat-N).
+                 *
+                 * The note clamp's child flow is queued by the interpreter instead: the note
+                 * blocks (newnote / note / osctime) return `[childFlow, 1]`, which makes
+                 * `runFromBlockNow` step (3) push the clamp onto the turtle queue exactly once.
+                 * Calling `_enqueue()` here as well queued the same child flow a second time
+                 * whenever a beat event was registered, so the clamp ran twice per note. The
+                 * second run executed after the note was consumed, re-triggering clamp content
+                 * (e.g. drums) outside of the note context and overwriting the note's timing.
+                 * Note: The offbeat cannot be Beat 1.
+                 */
+                const turtleID = tur.id;
+
+                if (tur.singer.beatList.includes("everybeat")) {
+                    activity.stage.dispatchEvent("__everybeat_" + turtleID + "__");
+                }
+
+                if (tur.singer.beatList.includes(beatValue)) {
+                    activity.stage.dispatchEvent("__beat_" + beatValue + "_" + turtleID + "__");
+                } else if (beatValue > 1 && tur.singer.beatList.includes("offbeat")) {
+                    activity.stage.dispatchEvent("__offbeat_" + turtleID + "__");
+                }
+
+                // Count the beats actually played since the pickup, so "every N beats" keeps
+                // its rhythm across a meter change. Pickup notes are not counted.
+                if (measureValue !== 0) {
+                    const thisBeat = 1 + beatsPlayed;
+                    for (let f = 0; f < tur.singer.factorList.length; f++) {
+                        if (thisBeat % tur.singer.factorList[f] === 0) {
+                            const eventName =
+                                "__beat_" + tur.singer.factorList[f] + "_" + turtleID + "__";
+                            activity.stage.dispatchEvent(eventName);
+                        }
+                    }
+                }
+            }
+
+            // A note can contain multiple pitch blocks to create a chord. The chord is accumuated in
+            // arrays, which are used when we play the note
+            activity.logo.clearNoteParams(tur, blk, []);
+
+            const noteBeatValue = blkName === "newnote" ? 1 / value : value;
+
+            tur.singer.inNoteBlock.push(blk);
+            tur.singer.multipleVoices = tur.singer.inNoteBlock.length > 1;
+
+            // Adjust the note value based on the beatFactor
+            tur.singer.noteValue[last(tur.singer.inNoteBlock)] =
+                1 / (noteBeatValue * tur.singer.beatFactor);
+
+            const listenerName = "_playnote_" + turtle + "_" + blk;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => {
+                if (tur.singer.multipleVoices) {
+                    activity.logo.notation.notationVoices(turtle, tur.singer.inNoteBlock.length);
+                }
+
+                if (tur.singer.inNoteBlock.length > 0) {
+                    if (tur.singer.inNeighbor.length > 0) {
+                        tur.singer.neighborArgBeat.push(
+                            tur.singer.beatFactor * (1 / last(tur.singer.neighborNoteValue))
+                        );
+
+                        const nextBeat = 1 / noteBeatValue - 2 * last(tur.singer.neighborNoteValue);
+                        if (nextBeat <= 0 || !isFinite(nextBeat)) {
+                            activity.errorMsg(
+                                _(
+                                    "Neighbor note value is too large for the current note duration."
+                                ),
+                                blk
+                            );
+                            tur.singer.neighborArgCurrentBeat.push(null);
+                        } else {
+                            tur.singer.neighborArgCurrentBeat.push(
+                                tur.singer.beatFactor * (1 / nextBeat)
+                            );
+                        }
+                    }
+
+                    Singer.processNote(
+                        activity,
+                        1 / tur.singer.noteValue[last(tur.singer.inNoteBlock)],
+                        blkName === "osctime",
+                        last(tur.singer.inNoteBlock),
+                        turtle
+                    );
+                }
+
+                delete tur.singer.oscList[last(tur.singer.inNoteBlock)];
+                delete tur.singer.noteBeat[last(tur.singer.inNoteBlock)];
+                delete tur.singer.noteBeatValues[last(tur.singer.inNoteBlock)];
+                delete tur.singer.noteValue[last(tur.singer.inNoteBlock)];
+                delete tur.singer.notePitches[last(tur.singer.inNoteBlock)];
+                delete tur.singer.noteOctaves[last(tur.singer.inNoteBlock)];
+                delete tur.singer.noteCents[last(tur.singer.inNoteBlock)];
+                delete tur.singer.noteHertz[last(tur.singer.inNoteBlock)];
+                delete tur.singer.noteDrums[last(tur.singer.inNoteBlock)];
+                delete tur.singer.embeddedGraphics[last(tur.singer.inNoteBlock)];
+                tur.singer.inNoteBlock.splice(-1, 1);
+
+                if (tur.singer.multipleVoices && tur.singer.inNoteBlock.length === 0) {
+                    activity.logo.notation.notationVoices(turtle, 0);
+                    tur.singer.multipleVoices = false;
+                }
+
+                if (tur.singer.inNoteBlock.length === 0) {
+                    activity.logo.pitchBlocks = [];
+                    activity.logo.drumBlocks = [];
+                }
+            };
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+        }
+
+        /**
+         * "silence" block.
+         * Plays a rest.
+         *
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @returns {void}
+         */
+        static playRest(turtle) {
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            if (
+                tur.singer.inNoteBlock.length > 0 &&
+                tur.singer.notePitches[last(tur.singer.inNoteBlock)] !== undefined
+            ) {
+                tur.singer.notePitches[last(tur.singer.inNoteBlock)].push("rest");
+                tur.singer.noteOctaves[last(tur.singer.inNoteBlock)].push(4);
+                tur.singer.noteCents[last(tur.singer.inNoteBlock)].push(0);
+                tur.singer.noteHertz[last(tur.singer.inNoteBlock)].push(0);
+                tur.singer.noteBeatValues[last(tur.singer.inNoteBlock)].push(tur.singer.beatFactor);
+                tur.singer.pushedNote = true;
+            }
+        }
+
+        /**
+         * "dot" block.
+         * Extends the duration of a note by 50%.
+         *
+         * @param {Number} value - dot value
+         * @param {Object} turtle - Turtle object
+         * @param {Object} blk - corresponding Block object index in blocks.blockList or custom block number
+         * @returns {void}
+         */
+        static doRhythmicDot(value, turtle, blk) {
+            if (!Number.isFinite(value)) {
+                activity.errorMsg(_("Dot value must be a finite number."), blk);
+                return;
+            }
+
+            let dotIncrement;
+            if (value >= 0) {
+                dotIncrement = value;
+            } else if (value === -1) {
+                activity.errorMsg(_("An argument of -1 results in a note value of 0."), blk);
+                dotIncrement = 0;
+            } else {
+                dotIncrement = -1 / value;
+            }
+
+            const tur = activity.turtles.ithTurtle(turtle);
+            const newDotCount = tur.singer.dotCount + dotIncrement;
+
+            if (!Number.isFinite(dotIncrement) || !Number.isFinite(newDotCount)) {
+                activity.errorMsg(_("Dot value must be a finite number."), blk);
+                return;
+            }
+
+            const currentDotFactor = 2 - 1 / Math.pow(2, tur.singer.dotCount);
+            const newDotFactor = 2 - 1 / Math.pow(2, newDotCount);
+            const newBeatFactor = (tur.singer.beatFactor * currentDotFactor) / newDotFactor;
+
+            if (!Number.isFinite(newBeatFactor) || newBeatFactor <= 0) {
+                activity.errorMsg(_("Dot value must be a finite number."), blk);
+                return;
+            }
+
+            tur.singer.beatFactor = newBeatFactor;
+            tur.singer.dotCount = newDotCount;
+
+            const baseListenerName = "_dot_" + turtle + "_" + blk;
+            let listenerName = baseListenerName;
+            if (tur && tur.listeners) {
+                let suffix = 1;
+                while (listenerName in tur.listeners) {
+                    listenerName = baseListenerName + "_" + suffix++;
+                }
+            }
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => {
+                const currentDotFactor = 2 - 1 / Math.pow(2, tur.singer.dotCount);
+                tur.singer.beatFactor *= currentDotFactor;
+                tur.singer.dotCount -= dotIncrement;
+                const newDotFactor = 2 - 1 / Math.pow(2, tur.singer.dotCount);
+                tur.singer.beatFactor /= newDotFactor;
+            };
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+        }
+
+        /**
+         * "tie" block.
+         * Works on pairs of notes, combining them into one note.
+         *
+         * @param {Object} turtle - Turtle object
+         * @param {Object} blk - corresponding Block object index in blocks.blockList or custom block number
+         * @returns {boolean} whether a tie listener was set up for the end of the clamp
+         */
+        static doTie(turtle, blk) {
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            // If a Tie clamp is already active on this turtle, treat the inner Tie
+            // as a non-owning nested scope. Do not wipe the enclosing Tie's pending state,
+            // do not overwrite its cleanup listener, and do not deactivate tie mode on exit.
+            if (tur && tur.singer && tur.singer.tie) {
+                return false;
+            }
+
+            // Tie notes together in pairs
+            tur.singer.tie = true;
+            tur.singer.tieNotePitches = [];
+            tur.singer.tieNoteExtras = [];
+            tur.singer.tieCarryOver = 0;
+            tur.singer.tieFirstDrums = [];
+
+            const listenerName = "_tie_" + turtle;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => {
+                tur.singer.tie = false;
+
+                // If tieCarryOver > 0, we have one more note to play
+                if (tur.singer.tieCarryOver > 0) {
+                    if (tur.singer.justCounting.length === 0) {
+                        const lastNote = last(tur.singer.inNoteBlock);
+                        // eslint-disable-next-line eqeqeq
+                        if (lastNote != null && lastNote in tur.singer.notePitches) {
+                            // Remove the note from the Lilypond list
+                            for (
+                                let i = 0;
+                                i < tur.singer.notePitches[last(tur.singer.inNoteBlock)].length;
+                                i++
+                            ) {
+                                activity.logo.notation.notationRemoveTie(turtle);
+                            }
+                        }
+                    }
+
+                    // Restore the extra note and play it
+                    const saveBlk = tur.singer.tieNoteExtras[0];
+                    const _noteValue = tur.singer.tieCarryOver;
+                    tur.singer.tieCarryOver = 0;
+
+                    tur.singer.inNoteBlock.push(saveBlk);
+
+                    tur.singer.notePitches[saveBlk] = [];
+                    tur.singer.noteOctaves[saveBlk] = [];
+                    tur.singer.noteCents[saveBlk] = [];
+                    tur.singer.noteHertz[saveBlk] = [];
+                    for (let i = 0; i < tur.singer.tieNotePitches.length; i++) {
+                        tur.singer.notePitches[saveBlk].push(tur.singer.tieNotePitches[i][0]);
+                        tur.singer.noteOctaves[saveBlk].push(tur.singer.tieNotePitches[i][1]);
+                        tur.singer.noteCents[saveBlk].push(tur.singer.tieNotePitches[i][2]);
+                        tur.singer.noteHertz[saveBlk].push(tur.singer.tieNotePitches[i][3]);
+                    }
+
+                    tur.singer.oscList[saveBlk] = tur.singer.tieNoteExtras[1];
+                    tur.singer.noteBeat[saveBlk] = tur.singer.tieNoteExtras[2];
+                    tur.singer.noteBeatValues[saveBlk] = tur.singer.tieNoteExtras[3];
+                    tur.singer.noteDrums[saveBlk] = tur.singer.tieNoteExtras[4];
+                    tur.singer.embeddedGraphics[saveBlk] = []; // graphics will have already been rendered
+
+                    // The carried-over note was counted when it was first played,
+                    // so don't count it again when it is replayed.
+                    const saveNoteCount = tur.singer.notesPlayed;
+                    const saveTallyNotes = tur.singer.tallyNotes;
+
+                    Singer.processNote(
+                        activity,
+                        tur.singer.tieNoteExtras[7], // rawDurationValue
+                        tur.singer.tieNoteExtras[6], // isOsc
+                        saveBlk,
+                        turtle
+                    );
+
+                    tur.singer.notesPlayed = saveNoteCount;
+                    tur.singer.tallyNotes = saveTallyNotes;
+
+                    // compute bpmFactor locally (same logic as Singer.processNote)
+                    const bpmFactor =
+                        TONEBPM /
+                        (tur.singer.bpm.length > 0 ? last(tur.singer.bpm) : Singer.masterBPM);
+
+                    if (!tur.singer.suppressOutput) {
+                        const rawDuration = tur.singer.tieNoteExtras[7];
+                        const wasOsc = tur.singer.tieNoteExtras[6];
+
+                        const waitSeconds = wasOsc ? rawDuration / 1000 : bpmFactor / rawDuration;
+
+                        tur.singer.turtleTime += waitSeconds;
+                        tur.doWait(waitSeconds);
+                    }
+
+                    tur.singer.inNoteBlock.pop();
+
+                    delete tur.singer.notePitches[saveBlk];
+                    delete tur.singer.noteOctaves[saveBlk];
+                    delete tur.singer.noteCents[saveBlk];
+                    delete tur.singer.noteHertz[saveBlk];
+                    delete tur.singer.oscList[saveBlk];
+                    delete tur.singer.noteBeat[saveBlk];
+                    delete tur.singer.noteBeatValues[saveBlk];
+                    delete tur.singer.noteDrums[saveBlk];
+                    delete tur.singer.embeddedGraphics[saveBlk];
+
+                    // Remove duplicate note
+                    activity.logo.notation.notationStaging[turtle].pop();
+                }
+
+                tur.singer.tieNotePitches = [];
+                tur.singer.tieNoteExtras = [];
+            };
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+            return true;
+        }
+
+        /**
+         * "multiply note value" block.
+         * Changes the duration of notes by changing their note values.
+         *
+         * @param {Number} factor - multiply factor
+         * @param {Object} turtle - Turtle object
+         * @param {Object} blk - corresponding Block object index in blocks.blockList or custom block number
+         * @returns {void}
+         */
+        static multiplyNoteValue(factor, turtle, blk) {
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            if (!Number.isFinite(factor) || factor === 0) {
+                return;
+            }
+
+            tur.singer.beatFactor /= factor;
+            tur.singer.beatFactorValues.push(factor);
+
+            const listenerName = "_multiplybeat_" + turtle;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            // Nested clamps share one listener name, so each one pops its own factor.
+            const __listener = () => (tur.singer.beatFactor *= tur.singer.beatFactorValues.pop());
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+        }
+
+        /**
+         * "swing" block.
+         * Works on pairs of notes (specified by note value), adding some duration (specified by swing value)
+         * to the first note and taking the same amount from the second note.
+         *
+         * @param {Number} swingValue - swing value
+         * @param {Number} noteValue - target note value
+         * @param {Object} turtle - Turtle object
+         * @param {Object} blk - corresponding Block object index in blocks.blockList or custom block number
+         * @returns {boolean} whether a swing listener was set up for the end of the clamp
+         */
+        static addSwing(swingValue, noteValue, turtle, blk) {
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            if (tur.singer.suppressOutput) {
+                activity.logo.notation.notationSwing(turtle);
+            } else {
+                if (!Number.isFinite(swingValue) || swingValue === 0) {
+                    return false;
+                }
+                if (!Number.isFinite(noteValue) || noteValue === 0) {
+                    return false;
+                }
+                tur.singer.swing.push(1 / swingValue);
+                tur.singer.swingTarget.push(1 / noteValue);
+            }
+
+            tur.singer.swingCarryOver = 0;
+
+            const listenerName = "_swing_" + turtle;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => {
+                if (!tur.singer.suppressOutput) {
+                    tur.singer.swingTarget.pop();
+                    tur.singer.swing.pop();
+                }
+
+                tur.singer.swingCarryOver = 0;
+            };
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+            return true;
+        }
+
+        /**
+         * "note value" block.
+         * Returns the value of the duration of the note currently being played.
+         *
+         * @param {Number} turtle - Turtle index in turtles.turtleList.
+         * @returns {Number} note value
+         */
+        static getNoteValue(turtle) {
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            let value = 0;
+            if (
+                tur.singer.noteValue[last(tur.singer.inNoteBlock)] !== null &&
+                tur.singer.noteValue[last(tur.singer.inNoteBlock)] !== undefined
+            ) {
+                value =
+                    tur.singer.noteValue[last(tur.singer.inNoteBlock)] !== 0
+                        ? 1 / tur.singer.noteValue[last(tur.singer.inNoteBlock)]
+                        : 0;
+            } else if (tur.singer.lastNotePlayed !== null) {
+                value = tur.singer.lastNotePlayed[1];
+            } else if (
+                tur.singer.notePitches[last(tur.singer.inNoteBlock)] !== undefined &&
+                tur.singer.notePitches[last(tur.singer.inNoteBlock)].length > 0
+            ) {
+                value = tur.singer.noteBeat[last(tur.singer.inNoteBlock)];
+            } else {
+                value = 0;
+            }
+
+            return value !== 0 ? 1 / value : 0;
+        }
+    };
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = setupRhythmActions;
+}

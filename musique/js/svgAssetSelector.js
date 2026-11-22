@@ -1,0 +1,288 @@
+// Copyright (c) 2026 Sugar Labs
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/**
+ * SVG Asset Selector
+ *
+ * Provides a modal UI for selecting built-in SVG images from the
+ * project's asset directories (images/ and mouse-art/) or uploading
+ * from the local file system.
+ *
+ * @module svgAssetSelector
+ * @see {@link https://github.com/sugarlabs/musicblocks/issues/1291}
+ */
+
+// Built-in SVG assets are loaded dynamically from js/svgAssets.json
+
+/**
+ * Opens the SVG asset selector modal.
+ *
+ * Presents two tabs:
+ *   1. "Built-in Images" — a grid of selectable SVG previews
+ *   2. "Upload from Device" — triggers the existing file-upload flow
+ *
+ * @param {Function} onSelectBuiltIn - Called with the data-URL of the
+ *     chosen built-in SVG when the user confirms a selection.
+ * @param {Function} onUploadFromDevice - Called (with no args) when
+ *     the user chooses to upload a local file instead.
+ */
+function openSvgAssetSelector(onSelectBuiltIn, onUploadFromDevice) {
+    // Prevent duplicate modals
+    const existing = document.getElementById("svgAssetSelectorOverlay");
+    if (existing) existing.remove();
+
+    fetch("./js/svgAssets.json")
+        .then(function (response) {
+            if (!response.ok) {
+                throw new Error("HTTP " + response.status);
+            }
+            return response.json();
+        })
+        .then(function (data) {
+            const BUILTIN_SVG_ASSETS = data.svgs;
+
+            // ── Build DOM ────────────────────────────────────────────────
+            const overlay = document.createElement("div");
+            overlay.id = "svgAssetSelectorOverlay";
+
+            const modal = document.createElement("div");
+            modal.id = "svgAssetSelectorModal";
+
+            // Header
+            const header = document.createElement("div");
+            header.className = "svg-selector-header";
+            const h3 = document.createElement("h3");
+            h3.textContent = _("Choose an image");
+            const closeBtn = document.createElement("button");
+            closeBtn.className = "svg-selector-close";
+            closeBtn.setAttribute("aria-label", _("Close"));
+            closeBtn.textContent = "×";
+            header.appendChild(h3);
+            header.appendChild(closeBtn);
+            modal.appendChild(header);
+
+            // Tabs
+            const tabBar = document.createElement("div");
+            tabBar.className = "svg-selector-tabs";
+
+            const tabBuiltIn = document.createElement("button");
+            tabBuiltIn.className = "svg-selector-tab active";
+            tabBuiltIn.id = "svgTabBuiltIn";
+            const tabBuiltInIcon = document.createElement("span");
+            tabBuiltInIcon.className = "tab-icon material-icons";
+            tabBuiltInIcon.textContent = "collections";
+            tabBuiltIn.appendChild(tabBuiltInIcon);
+            tabBuiltIn.appendChild(document.createTextNode(_(" Built-in images")));
+
+            const tabUpload = document.createElement("button");
+            tabUpload.className = "svg-selector-tab";
+            tabUpload.id = "svgTabUpload";
+            const tabUploadIcon = document.createElement("span");
+            tabUploadIcon.className = "tab-icon material-icons";
+            tabUploadIcon.textContent = "file_upload";
+            tabUpload.appendChild(tabUploadIcon);
+            tabUpload.appendChild(document.createTextNode(_(" Upload from device")));
+
+            tabBar.appendChild(tabBuiltIn);
+            tabBar.appendChild(tabUpload);
+            modal.appendChild(tabBar);
+
+            // ── Built-in panel ──────────────────────────────────────────
+            const gridContainer = document.createElement("div");
+            gridContainer.className = "svg-selector-grid-container";
+            gridContainer.id = "svgGridPanel";
+
+            const grid = document.createElement("div");
+            grid.className = "svg-selector-grid";
+
+            let selectedAssetPath = null;
+
+            BUILTIN_SVG_ASSETS.forEach(function (asset) {
+                const item = document.createElement("div");
+                item.className = "svg-asset-item";
+                item.dataset.path = asset.path;
+
+                const img = document.createElement("img");
+                img.src = asset.path;
+                img.alt = asset.name;
+                img.loading = "lazy";
+                // Graceful fallback for missing images
+                img.onerror = function () {
+                    this.style.display = "none";
+                };
+
+                const label = document.createElement("span");
+                label.className = "asset-name";
+                label.textContent = asset.name;
+
+                item.appendChild(img);
+                item.appendChild(label);
+
+                item.addEventListener("click", function () {
+                    // Deselect previous
+                    const prev = grid.querySelector(".svg-asset-item.selected");
+                    if (prev) prev.classList.remove("selected");
+                    item.classList.add("selected");
+                    selectedAssetPath = asset.path;
+                    applyBtn.disabled = false;
+                });
+
+                grid.appendChild(item);
+            });
+
+            gridContainer.appendChild(grid);
+            modal.appendChild(gridContainer);
+
+            // ── Upload panel (hidden by default) ────────────────────────
+            const uploadPanel = document.createElement("div");
+            uploadPanel.className = "svg-selector-upload";
+            uploadPanel.id = "svgUploadPanel";
+            uploadPanel.style.display = "none";
+
+            const uploadBtn = document.createElement("button");
+            uploadBtn.className = "svg-upload-btn";
+            const uploadBtnIcon = document.createElement("span");
+            uploadBtnIcon.className = "material-icons";
+            uploadBtnIcon.textContent = "cloud_upload";
+            uploadBtn.appendChild(uploadBtnIcon);
+            uploadBtn.appendChild(document.createTextNode(_(" Choose file")));
+
+            const uploadHint = document.createElement("span");
+            uploadHint.className = "svg-upload-hint";
+            uploadHint.textContent = _("Supports PNG, JPG, SVG, GIF, and other image formats");
+
+            uploadPanel.appendChild(uploadBtn);
+            uploadPanel.appendChild(uploadHint);
+            modal.appendChild(uploadPanel);
+
+            // ── Footer ──────────────────────────────────────────────────
+            const footer = document.createElement("div");
+            footer.className = "svg-selector-footer";
+
+            const cancelBtn = document.createElement("button");
+            cancelBtn.className = "svg-cancel-btn";
+            cancelBtn.textContent = _("Cancel");
+
+            const applyBtn = document.createElement("button");
+            applyBtn.className = "svg-apply-btn";
+            applyBtn.textContent = _("Apply");
+            applyBtn.disabled = true;
+
+            footer.appendChild(cancelBtn);
+            footer.appendChild(applyBtn);
+            modal.appendChild(footer);
+
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+
+            // Trigger enter animation
+            requestAnimationFrame(function () {
+                overlay.classList.add("visible");
+            });
+
+            // ── Event handlers ──────────────────────────────────────────
+            function closeModal() {
+                overlay.classList.remove("visible");
+                setTimeout(function () {
+                    overlay.remove();
+                }, 250);
+            }
+
+            // Close button
+            header.querySelector(".svg-selector-close").addEventListener("click", closeModal);
+            cancelBtn.addEventListener("click", closeModal);
+
+            // Click outside modal to close
+            overlay.addEventListener("click", function (e) {
+                if (e.target === overlay) closeModal();
+            });
+
+            // Tab switching
+            tabBuiltIn.addEventListener("click", function () {
+                tabBuiltIn.classList.add("active");
+                tabUpload.classList.remove("active");
+                gridContainer.style.display = "";
+                uploadPanel.style.display = "none";
+                footer.style.display = "";
+            });
+
+            tabUpload.addEventListener("click", function () {
+                tabUpload.classList.add("active");
+                tabBuiltIn.classList.remove("active");
+                gridContainer.style.display = "none";
+                uploadPanel.style.display = "";
+                footer.style.display = "none";
+            });
+
+            // Upload button → close modal and delegate to existing upload flow
+            uploadBtn.addEventListener("click", function () {
+                closeModal();
+                if (typeof onUploadFromDevice === "function") {
+                    onUploadFromDevice();
+                }
+            });
+
+            // Apply selected built-in image
+            applyBtn.addEventListener("click", function () {
+                if (!selectedAssetPath) return;
+
+                // Fetch the SVG/image and convert to data URL
+                _fetchAsDataURL(selectedAssetPath, function (dataURL) {
+                    closeModal();
+                    if (typeof onSelectBuiltIn === "function") {
+                        onSelectBuiltIn(dataURL);
+                    }
+                });
+            });
+        })
+        .catch(function (error) {
+            console.error("Failed to load SVG assets:", error);
+            // Fallback to upload from device if built-in fails to load
+            if (typeof onUploadFromDevice === "function") {
+                onUploadFromDevice();
+            }
+        });
+}
+
+/**
+ * Fetches an asset file and converts it to a data-URL string.
+ *
+ * Works entirely offline because it reads from the project's own
+ * static assets via a relative path.
+ *
+ * @param {string} path - Relative path to the asset file.
+ * @param {Function} callback - Called with the resulting data-URL.
+ * @private
+ */
+function _fetchAsDataURL(path, callback) {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", path, true);
+    xhr.responseType = "blob";
+    xhr.onload = function () {
+        if (xhr.status === 200 || xhr.status === 0) {
+            var reader = new FileReader();
+            reader.onloadend = function () {
+                callback(reader.result);
+            };
+            reader.readAsDataURL(xhr.response);
+        } else {
+            console.error("Failed to load built-in asset: " + path);
+        }
+    };
+    xhr.onerror = function () {
+        console.error("Network error loading built-in asset: " + path);
+    };
+    xhr.send();
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { openSvgAssetSelector };
+}

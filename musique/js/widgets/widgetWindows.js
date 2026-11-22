@@ -1,0 +1,1432 @@
+// Copyright (c) 2020 Bottersnike
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/* global _, docById, ManagedTimer, makeKeyboardAccessible */
+
+/*
+Globals location
+- js/utils/utils.js
+_, docById
+*/
+
+/**
+ * True if the event carries touch data (a touches/changedTouches list).
+ * @param {MouseEvent|TouchEvent} e
+ * @returns {boolean}
+ */
+function _isTouchEvent(e) {
+    return Boolean(e.touches || e.changedTouches);
+}
+
+/**
+ * Finds the Touch with the given identifier in a TouchList.
+ * @param {TouchList|undefined} touchList
+ * @param {number} identifier
+ * @returns {Touch|null}
+ */
+function _touchWithId(touchList, identifier) {
+    if (!touchList) return null;
+    for (let i = 0; i < touchList.length; i++) {
+        if (touchList[i].identifier === identifier) return touchList[i];
+    }
+    return null;
+}
+
+/**
+ * Picks the touch that triggered a touchstart — the one just added,
+ * not whichever happens to be first in the touches list (relevant when a
+ * second finger is already down elsewhere on the page).
+ * @param {TouchEvent} e
+ * @returns {Touch|null}
+ */
+function _startingTouch(e) {
+    return (e.changedTouches && e.changedTouches[0]) || (e.touches && e.touches[0]) || null;
+}
+
+/**
+ * Resolves the {clientX, clientY} point a drag should use for this event.
+ * Mouse events pass through unchanged. Touch events resolve to the specific
+ * touch identified by `touchId` (pass `null` to resolve the touch that is
+ * starting a new drag) so an unrelated second finger can neither hijack nor
+ * prematurely end an in-progress drag.
+ * @param {MouseEvent|TouchEvent} e
+ * @param {number|null} touchId
+ * @returns {{clientX: number, clientY: number}|null}
+ */
+function _pointFromEvent(e, touchId) {
+    if (!_isTouchEvent(e)) return e;
+    if (touchId === null) return _startingTouch(e);
+    // `touches` lists every active finger, so a different finger's event would
+    // still contain the drag finger. Only `changedTouches` says which fingers
+    // actually moved or lifted in this event.
+    return _touchWithId(e.changedTouches, touchId);
+}
+
+window.widgetWindows = {
+    openWindows: {},
+    _posCache: {},
+    _maximizedCache: {},
+    focused: null,
+    draggingWindow: null,
+    _globalListenersInitialized: false,
+    /**
+     * Returns the bottom edge of the visible toolbar area.
+     *
+     * @returns {number} Toolbar bottom position in viewport pixels.
+     */
+    _getToolbarBottom() {
+        const mainToolbar = document.querySelector("#toolbars .main-nav-container");
+        const auxToolbar = docById("aux-toolbar");
+
+        let bottom = 64;
+
+        if (mainToolbar) {
+            const mainRect = mainToolbar.getBoundingClientRect();
+            if (mainRect.bottom > 0) {
+                bottom = mainRect.bottom;
+            }
+        }
+
+        if (auxToolbar && window.getComputedStyle(auxToolbar).display !== "none") {
+            const auxRect = auxToolbar.getBoundingClientRect();
+            if (auxRect.bottom > bottom) {
+                bottom = auxRect.bottom;
+            }
+        }
+
+        return bottom;
+    },
+
+    // NOTE: This mapping only works for widgets that never set their own
+    // `blockNo` property (e.g. ModeWidget). window.widgetWindows.windowFor()
+    // keys a widget's window by `widget.blockNo` if that property is set to
+    // anything other than undefined (including null) — otherwise it falls
+    // back to the `saveAs` or `title` argument. Widgets like PhraseMaker set
+    // `this.blockNo` in their constructor, so they are keyed by blockNo, not
+    // by name, and will NOT be found via this KEY_MAPPING lookup. Adding such
+    // widgets here would silently do nothing. Before adding a new entry,
+    // verify the target widget's windowFor() call and confirm it does not
+    // rely on blockNo for its window key.
+    KEY_MAPPING: {
+        "pitch drum": "pitch drum",
+        "custom mode": "custom mode",
+        "tempo": "tempo",
+        "arpeggio": "arpeggio",
+        "timbre": "timbre",
+        "sampler": "sampler",
+        "rhythm maker": "rhythm maker",
+        "oscilloscope": "oscilloscope",
+        "temperament": "temperament",
+        "meter": "meter",
+        "LEGO Bricks": "LEGO Bricks",
+        "pitch slider": "slider",
+        "pitch staircase": "pitch staircase",
+        "music keyboard": "music keyboard",
+        "status": "status",
+        "chord progression": "chord progression"
+    },
+
+    /**
+     * Single source of truth for widgets that should reinitialize when a
+     * connected block changes while their window is open.
+     *
+     * Entries are the English windowFor() title strings. At runtime the
+     * open .wftTitle and the widget block's staticLabels[0] are both
+     * produced with _(), so they must match each other; call sites also
+     * require title === staticLabels[0] before calling reInitWidget().
+     *
+     * Separate from KEY_MAPPING, which is only for closeBlkWidgets().
+     */
+    REINIT_WIDGET_TITLES: new Set([
+        "oscilloscope",
+        "tempo",
+        "rhythm maker",
+        "pitch slider",
+        "pitch staircase",
+        "status",
+        "phrase maker",
+        "LEGO Bricks",
+        "arpeggio",
+        "custom mode",
+        "music keyboard",
+        "pitch drum",
+        "meter",
+        "temperament",
+        "mode",
+        "timbre",
+        "chord progression"
+    ]),
+
+    /**
+     * True when title is listed in REINIT_WIDGET_TITLES.
+     *
+     * The registry stores English title strings; at runtime the open widget's
+     * title is already localized via _(). We therefore translate each registry
+     * entry with _() before comparing — the same approach used by
+     * closeBlkWidgets() for KEY_MAPPING.
+     *
+     * @param {string} title - Open widget .wftTitle text (may be localized)
+     * @returns {boolean}
+     */
+    isReinitWidgetTitle(title) {
+        const translate = typeof _ === "function" ? _ : str => str;
+        for (const englishTitle of window.widgetWindows.REINIT_WIDGET_TITLES) {
+            if (translate(englishTitle) === title) {
+                return true;
+            }
+        }
+        return false;
+    },
+
+    /**
+     * Closes a specific widget by its name.
+     *
+     * @param {string} name - The name of the widget to be closed.
+     * @returns {void}
+     */
+    closeBlkWidgets(name) {
+        let searchKey = name;
+
+        for (const origKey in window.widgetWindows.KEY_MAPPING) {
+            const translated = typeof _ === "function" ? _(origKey) : origKey;
+            if (name === translated) {
+                searchKey = window.widgetWindows.KEY_MAPPING[origKey];
+                break;
+            }
+        }
+
+        if (
+            window.widgetWindows &&
+            window.widgetWindows.openWindows &&
+            window.widgetWindows.openWindows[searchKey]
+        ) {
+            window.widgetWindows.closeWindow(searchKey);
+            return;
+        }
+
+        const widgetTitle = document.getElementsByClassName("wftTitle");
+        for (let i = 0; i < widgetTitle.length; i++) {
+            const titleEl = widgetTitle[i];
+            if (
+                titleEl.textContent.trim() === name ||
+                titleEl.textContent.trim() === searchKey ||
+                titleEl.id === `${searchKey}WidgetID`
+            ) {
+                const winKey =
+                    titleEl.id && typeof titleEl.id === "string"
+                        ? titleEl.id.replace("WidgetID", "")
+                        : searchKey;
+                if (
+                    window.widgetWindows &&
+                    typeof window.widgetWindows.closeWindow === "function"
+                ) {
+                    window.widgetWindows.closeWindow(winKey);
+                }
+                break;
+            }
+        }
+    },
+
+    _handleGlobalKeyDown(e) {
+        const focused = window.widgetWindows.focused;
+        if (!focused || e.repeat) return; // Guard against no focus or rapid-fire repeat
+
+        // Ignore shortcuts when focus is inside an input, textarea, or contenteditable element
+        const activeElement = document.activeElement;
+        const isInput =
+            activeElement &&
+            (activeElement.tagName === "INPUT" ||
+                activeElement.tagName === "TEXTAREA" ||
+                activeElement.isContentEditable);
+
+        if (isInput) return;
+
+        // Handle Escape (Close)
+        if (e.key === "Escape") {
+            // An open pie menu takes Escape first (see piemenus.js). Widgets open
+            // theirs in #wheelDivptm, and the Mode widget uses #wheelDiv.
+            const isPieMenuOpen = ["wheelDivptm", "wheelDiv"].some(id => {
+                const pieMenu = docById(id);
+                return pieMenu && pieMenu.style.display !== "none";
+            });
+            if (isPieMenuOpen) return;
+
+            focused.onclose();
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+
+        // Handle Maximize (Cmd/Ctrl + Shift + M)
+        const isModifierActive = e.metaKey || e.ctrlKey;
+        if (isModifierActive && e.shiftKey && e.code === "KeyM") {
+            if (focused._fullscreenEnabled) {
+                if (focused._maximized) {
+                    focused._restore();
+                    focused.sendToCenter();
+                } else {
+                    focused._maximize();
+                }
+                focused.takeFocus();
+                focused.onmaximize();
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }
+    },
+    /**
+     * Repositions open widget windows to respect the visible toolbar and viewport bounds.
+     *
+     * @returns {void}
+     */
+    _handleResize() {
+        const toolbarBottom = this._getToolbarBottom();
+
+        for (const win of Object.values(this.openWindows)) {
+            if (!win || win._frame.style.display === "none") continue;
+
+            if (win._maximized) {
+                win._frame.style.top = `${toolbarBottom}px`;
+                if (!win._rolled) {
+                    win._frame.style.height = `calc(100vh - ${toolbarBottom}px)`;
+                }
+                continue;
+            }
+
+            // Preserve the existing small-screen behavior for floating windows.
+            if (window.innerWidth <= 600) continue;
+
+            const rect = win._frame.getBoundingClientRect();
+            const x = Math.min(Math.max(rect.left, 0), Math.max(0, window.innerWidth - rect.width));
+            const y = Math.min(
+                Math.max(rect.top, toolbarBottom),
+                Math.max(toolbarBottom, window.innerHeight - rect.height)
+            );
+
+            if (x !== rect.left || y !== rect.top) {
+                win.setPosition(x, y);
+            }
+        }
+    },
+    _initGlobalListeners() {
+        if (this._globalListenersInitialized) return;
+
+        this._boundHandleGlobalMouseMove = this._handleGlobalMouseMove.bind(this);
+        this._boundHandleGlobalMouseUp = this._handleGlobalMouseUp.bind(this);
+        this._boundHandleGlobalMouseDown = this._handleGlobalMouseDown.bind(this);
+        this._boundHandleGlobalKeyDown = this._handleGlobalKeyDown.bind(this);
+        this._boundHandleResize = this._handleResize.bind(this);
+        this._boundHandleGlobalTouchMove = this._handleGlobalTouchMove.bind(this);
+        this._boundHandleGlobalTouchEnd = this._handleGlobalTouchEnd.bind(this);
+
+        document.addEventListener("mouseup", this._boundHandleGlobalMouseUp, true);
+        document.addEventListener("mousemove", this._boundHandleGlobalMouseMove, true);
+        document.addEventListener("mousedown", this._boundHandleGlobalMouseDown, true);
+        // Touch counterparts so widget windows can be dragged on touch/mobile
+        // devices, which never fire mouse events.
+        document.addEventListener("touchend", this._boundHandleGlobalTouchEnd, true);
+        document.addEventListener("touchcancel", this._boundHandleGlobalTouchEnd, true);
+        document.addEventListener("touchmove", this._boundHandleGlobalTouchMove, {
+            capture: true,
+            passive: false
+        });
+        // Use capture phase (true) to handle keyboard shortcuts before individual
+        // widgets can intercept them via stopPropagation().
+        document.addEventListener("keydown", this._boundHandleGlobalKeyDown, true);
+        window.addEventListener("resize", this._boundHandleResize);
+
+        this._globalListenersInitialized = true;
+    },
+    _handleGlobalMouseMove(e) {
+        if (this.draggingWindow && this.draggingWindow._activeTouchId === null) {
+            this.draggingWindow._docMouseMoveHandler(e);
+        }
+    },
+    _handleGlobalTouchMove(e) {
+        // Only a touch-initiated drag reacts to touch events.
+        if (this.draggingWindow && this.draggingWindow._activeTouchId !== null) {
+            this.draggingWindow._docMouseMoveHandler(e);
+        }
+    },
+    _handleGlobalMouseUp(e) {
+        // A touch-initiated drag ends only through its own touchend/touchcancel.
+        if (this.draggingWindow && this.draggingWindow._activeTouchId === null) {
+            this.draggingWindow._dragTopHandler(e);
+            this.draggingWindow = null;
+        }
+    },
+    _handleGlobalTouchEnd(e) {
+        const win = this.draggingWindow;
+        // Ignore touch events during a mouse-initiated drag.
+        if (!win || win._activeTouchId === null) return;
+
+        // Ignore touchend/touchcancel from an unrelated finger: only end the
+        // drag when the touch that started it has actually lifted.
+        if (!_touchWithId(e.changedTouches, win._activeTouchId)) return;
+
+        // A cancelled gesture was never released, so it must not trigger the
+        // drag-to-top maximize. Only a real touchend does.
+        if (e.type !== "touchcancel") {
+            win._dragTopHandler(e);
+        }
+        win._activeTouchId = null;
+        this.draggingWindow = null;
+    },
+    _handleGlobalMouseDown(e) {
+        const isToolbarInteraction =
+            e.target?.closest &&
+            (e.target.closest("#toolbars") ||
+                e.target.closest("#aux-toolbar") ||
+                e.target.closest(".dropdown-content") ||
+                e.target.closest(".dropdown-trigger"));
+
+        // Widget pie menus (Music Keyboard, Phrase Maker, Sampler) open in
+        // #wheelDivptm, outside the widget frame, so a click on one must not
+        // take focus away from the widget that opened it.
+        const isWidgetPieMenuInteraction = e.target?.closest && e.target.closest("#wheelDivptm");
+
+        if (isToolbarInteraction || isWidgetPieMenuInteraction) {
+            return;
+        }
+
+        const windows = Object.values(this.openWindows).filter(win => win !== undefined);
+        let clickedWindow = null;
+
+        for (let i = 0; i < windows.length; i++) {
+            const win = windows[i];
+            if (win._frame && (e.target === win._frame || win._frame.contains(e.target))) {
+                clickedWindow = win;
+                break;
+            }
+        }
+
+        for (let i = 0; i < windows.length; i++) {
+            const win = windows[i];
+            if (win === clickedWindow) {
+                win._frame.style.opacity = "1";
+                win._frame.style.zIndex = "10000";
+            } else {
+                win._frame.style.opacity = "0.7";
+                win._frame.style.zIndex = "0";
+            }
+        }
+
+        const previous = this.focused;
+        this.focused = clickedWindow;
+        if (clickedWindow && typeof clickedWindow.onfocused === "function") {
+            clickedWindow.onfocused();
+        }
+        if (previous && previous !== clickedWindow && typeof previous.onblurred === "function") {
+            previous.onblurred();
+        }
+    }
+};
+
+class WidgetWindow {
+    /**
+     * @param {string} key
+     * @param {string} title
+     * @param {boolean} fullscreen
+     */
+    constructor(key, title, fullscreen = true) {
+        // Keep a reference to the object within handlers
+        this._key = key;
+        this._buttons = [];
+        this._first = true;
+        this._title = title;
+        this._visible = true;
+        this._rolled = false;
+        this._savedPos = null;
+        this._maximized = false;
+        this._fullscreenEnabled = fullscreen;
+        this.timerManager = typeof ManagedTimer !== "undefined" ? new ManagedTimer() : null;
+
+        // Drag offset for correct positioning
+        this._dx = this._dy = 0;
+        this._rafTicking = false;
+        this._previouslyFocused =
+            document.activeElement && document.activeElement !== document.body
+                ? document.activeElement
+                : null;
+
+        this._createUIelements();
+        this._setupLanguage();
+
+        window.widgetWindows._initGlobalListeners();
+
+        this._restorePending = false;
+        this._activeTouchId = null;
+        if (window.widgetWindows._posCache[this._key]) {
+            const _pos = window.widgetWindows._posCache[this._key];
+            const x = Number(_pos[0]);
+            const y = Number(_pos[1]);
+            if (
+                !Number.isNaN(x) &&
+                !Number.isNaN(y) &&
+                !window.widgetWindows._maximizedCache[this._key]
+            ) {
+                const clamped = this._clampToViewport(x, y);
+                this.setPosition(clamped[0], clamped[1]);
+                this._restorePending = true;
+            } else {
+                if (Number.isNaN(x) || Number.isNaN(y)) {
+                    delete window.widgetWindows._posCache[this._key];
+                }
+            }
+        }
+
+        this.takeFocus();
+
+        this.sendToCenter = this.sendToCenter.bind(this);
+    }
+
+    /**
+     * @private
+     * @param {string} base
+     * @param {string} className
+     * @param {HTMLElement} parent
+     * @returns {HTMLElement}
+     */
+    _create(base, className, parent) {
+        const el = document.createElement(base);
+        if (className) el.className = className;
+        if (parent) parent.append(el);
+        return el;
+    }
+
+    /**
+     * @private
+     * @param {HTMLElement} element
+     * @param {string} className
+     */
+    _toggleClass(element, className) {
+        element.classList.toggle(className);
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _createUIelements() {
+        const windows = docById("floatingWindows");
+        this._frame = this._create("div", "windowFrame", windows);
+        this._frame.setAttribute("role", "dialog");
+        this._frame.setAttribute("aria-label", _(this._title));
+        this._frame.setAttribute("tabindex", "-1");
+        this._overlayframe = this._create("div", "windowFrame windowOverlay", windows);
+        this._drag = this._create("div", "wfTopBar", this._frame);
+        this._drag.setAttribute("role", "toolbar");
+        this._drag.setAttribute("aria-label", _("Window controls"));
+        this._drag.style.display = "flex";
+        this._drag.style.justifyContent = "space-between";
+
+        if (this._fullscreenEnabled) {
+            this._drag.ondblclick = e => {
+                if (this._maximized) {
+                    this._restore();
+                    this.sendToCenter();
+                } else {
+                    this._maximize();
+                }
+                this.takeFocus();
+                this.onmaximize();
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            };
+        }
+        const closeButton = this._create("div", "wftButton close", this._drag);
+        this._closeButton = closeButton;
+        closeButton.title = _("Close");
+        closeButton.setAttribute("role", "button");
+        closeButton.setAttribute("aria-label", _("Close window"));
+        closeButton.setAttribute("tabindex", "0");
+        closeButton.onclick = e => {
+            this.onclose();
+            if (e && typeof e.preventDefault === "function") {
+                e.preventDefault();
+            }
+            if (e && typeof e.stopPropagation === "function") {
+                e.stopPropagation();
+            }
+        };
+        makeKeyboardAccessible(closeButton, _("Close window"));
+
+        this._nonclose = this._create("div", "nonclose", this._drag);
+        this._nonclose.style.display = "flex";
+        this._nonclose.style.justifyContent = "space-between";
+        this._nonclose.style.width = "100%";
+
+        const titleEl = this._create("div", "wftTitle", this._nonclose);
+        titleEl.replaceChildren();
+        titleEl.textContent = _(this._title);
+        titleEl.id = `${this._key}WidgetID`;
+        this._frame.setAttribute("aria-labelledby", titleEl.id);
+
+        const startDrag = (point, e) => {
+            // The title bar also holds the roll-up and maximize buttons. Dragging
+            // from them would swallow their click (touchstart preventDefault) and
+            // restore a maximized window right before the button re-maximizes it.
+            if (e.target?.closest && e.target.closest(".nonclosebuttons")) return;
+
+            // While a touch owns a drag, ignore any further touchstart so a second
+            // finger cannot take over the drag or change its offsets.
+            const active = window.widgetWindows.draggingWindow;
+            if (active && active._activeTouchId !== null) return;
+
+            // Once the user interacts with the window, later explicit centering
+            // calls are intentional and should not be suppressed.
+            this._restorePending = false;
+            window.widgetWindows.draggingWindow = this;
+            this._activeTouchId = _isTouchEvent(e) ? point.identifier : null;
+
+            this.takeFocus();
+
+            this._dx = point.clientX - this._drag.getBoundingClientRect().left;
+            this._dy = point.clientY - this._drag.getBoundingClientRect().top;
+            e.preventDefault();
+        };
+
+        this._nonclose.onmousedown = e => startDrag(e, e);
+        // Touch counterpart so the title bar can be dragged on touch/mobile devices.
+        this._nonclose.addEventListener(
+            "touchstart",
+            e => {
+                const point = _pointFromEvent(e, null);
+                if (point) startDrag(point, e);
+            },
+            { passive: false }
+        );
+
+        this._nonclosebuttons = this._create("div", "nonclosebuttons", this._nonclose);
+        this._nonclosebuttons.style.display = "flex";
+        this._rollButton = this._create("div", "wftButton rollup", this._nonclosebuttons);
+        const rollButton = this._rollButton;
+        rollButton.title = _("Minimize");
+        rollButton.setAttribute("role", "button");
+        rollButton.setAttribute("aria-label", _("Roll up window"));
+        rollButton.setAttribute("aria-expanded", "true");
+        rollButton.setAttribute("tabindex", "0");
+        rollButton.onclick = e => {
+            if (this._rolled) {
+                this.unroll();
+            } else {
+                this._rollup();
+            }
+            this.takeFocus();
+            if (e && typeof e.preventDefault === "function") {
+                e.preventDefault();
+            }
+            if (e && typeof e.stopPropagation === "function") {
+                e.stopPropagation();
+            }
+        };
+        makeKeyboardAccessible(rollButton, _("Roll up window"));
+
+        if (this._fullscreenEnabled) {
+            const maxminButton = this._create("div", "wftButton wftMaxmin", this._nonclosebuttons);
+            this._maxminButton = maxminButton;
+            maxminButton.title = _("Maximize window");
+            maxminButton.setAttribute("role", "button");
+            maxminButton.setAttribute("aria-label", _("Maximize window"));
+            maxminButton.setAttribute("tabindex", "0");
+            maxminButton.onclick = e => {
+                if (this._maximized) {
+                    this._restore();
+                    this.sendToCenter();
+                } else {
+                    this._maximize();
+                }
+                this.takeFocus();
+                this.onmaximize();
+                if (e && typeof e.preventDefault === "function") {
+                    e.preventDefault();
+                }
+                if (e && typeof e.stopImmediatePropagation === "function") {
+                    e.stopImmediatePropagation();
+                }
+            };
+            makeKeyboardAccessible(maxminButton, _("Maximize window"));
+            this._maxminIcon = this._create("img", undefined, maxminButton);
+            this._maxminIcon.setAttribute("src", "header-icons/icon-expand.svg");
+        }
+
+        this._body = this._create("div", "wfWinBody", this._frame);
+        this._toolbar = this._create("div", "wfbToolbar", this._body);
+        this._toolbar.setAttribute("role", "toolbar");
+        this._toolbar.setAttribute("aria-label", _("Widget toolbar"));
+
+        this._widget = this._create("div", "wfbWidget", this._body);
+
+        /**
+         * The innermost element under the pointer that can still scroll in
+         * the wheel's direction, or the widget itself.
+         * @param {EventTarget} target
+         * @param {number} deltaX
+         * @param {number} deltaY
+         * @returns {HTMLElement}
+         */
+        this._scrollTargetFor = (target, deltaX, deltaY) => {
+            const canScroll = (overflow, position, size, view, delta) =>
+                /(auto|scroll)/.test(overflow) &&
+                size > view &&
+                ((delta < 0 && position > 0) || (delta > 0 && position + view < size));
+
+            let node = target instanceof Element ? target : null;
+            while (node && node !== this._widget && this._widget.contains(node)) {
+                const style = window.getComputedStyle(node);
+                if (
+                    canScroll(
+                        style.overflowY,
+                        node.scrollTop,
+                        node.scrollHeight,
+                        node.clientHeight,
+                        deltaY
+                    ) ||
+                    canScroll(
+                        style.overflowX,
+                        node.scrollLeft,
+                        node.scrollWidth,
+                        node.clientWidth,
+                        deltaX
+                    )
+                ) {
+                    return node;
+                }
+                node = node.parentElement;
+            }
+            return this._widget;
+        };
+
+        this._widgetWheelHandler = event => {
+            const deltaY =
+                typeof event.deltaY === "number"
+                    ? event.deltaY
+                    : typeof event.detail === "number"
+                      ? event.detail * 16
+                      : 0;
+            const deltaX = typeof event.deltaX === "number" ? event.deltaX : 0;
+
+            // Scrolling only this._widget left inner scroll areas, such as the
+            // AI Debugger's chat log, unable to scroll at all.
+            const scroller = this._scrollTargetFor(event.target, deltaX, deltaY);
+            scroller.scrollTop += deltaY;
+            scroller.scrollLeft += deltaX;
+
+            if (event.cancelable) {
+                event.preventDefault();
+            }
+
+            event.stopPropagation();
+        };
+        this._widget.addEventListener("wheel", this._widgetWheelHandler, {
+            passive: false
+        });
+        this._widget.addEventListener("DOMMouseScroll", this._widgetWheelHandler, {
+            passive: false
+        });
+    }
+
+    /**
+     * @private
+     * @param {MouseEvent} e
+     * @returns {void}
+     */
+    _docMouseMoveHandler(e) {
+        // For touch, only react to the finger that started this drag: an
+        // unrelated second finger moving elsewhere must not jump the window.
+        const point = _pointFromEvent(e, this._activeTouchId);
+        if (!point) return;
+
+        if (this._maximized) {
+            const bcr = this._drag.getBoundingClientRect();
+            const dxRatio = (bcr.left - point.clientX) / (bcr.right - bcr.left);
+            const dy = bcr.top - point.clientY;
+
+            this._restore();
+            this.onmaximize();
+
+            const newBcr = this._drag.getBoundingClientRect();
+            this.setPosition(
+                point.clientX + dxRatio * (newBcr.right - newBcr.left),
+                point.clientY + dy
+            );
+
+            // Recalculate drag offsets from the restored frame so the rAF
+            // callback below does not overwrite the position with stale values.
+            const restoredBcr = this._drag.getBoundingClientRect();
+            this._dx = point.clientX - restoredBcr.left;
+            this._dy = point.clientY - restoredBcr.top;
+        }
+        // Throttle using requestAnimationFrame to prevent layout thrashing
+        if (this._rafTicking) return;
+
+        this._rafTicking = true;
+
+        requestAnimationFrame(() => {
+            const toolbarBottom = window.widgetWindows._getToolbarBottom();
+
+            if (this._fullscreenEnabled && this._frame.style.top === `${toolbarBottom}px`) {
+                this._overlay(true);
+            } else {
+                this._overlay(false);
+            }
+            const x = point.clientX - this._dx,
+                y = point.clientY - this._dy;
+
+            this.setPosition(x, y);
+            this._rafTicking = false;
+        });
+    }
+
+    _overlay(add, resetFrameZIndex = true) {
+        if (add) {
+            this._frame.style.zIndex = "10";
+            this._overlayframe.style.left = "0";
+            this._overlayframe.style.zIndex = "1";
+            const toolbarBottom = window.widgetWindows._getToolbarBottom();
+
+            this._overlayframe.style.top = `${toolbarBottom}px`;
+            this._overlayframe.style.width = "100vw";
+            this._overlayframe.style.height = `calc(100vh - ${toolbarBottom}px)`;
+            this._overlayframe.style.border = "0.25vw solid black";
+            this._overlayframe.style.backgroundColor = "var(--color-overlay-backdrop)";
+        } else {
+            if (resetFrameZIndex) this._frame.style.zIndex = "10000";
+            this._overlayframe.style.border = "0px";
+            this._overlayframe.style.zIndex = "-1";
+            this._overlayframe.style.backgroundColor = "transparent";
+        }
+    }
+
+    /**
+     * @private
+     * @param {MouseEvent} e
+     * @returns {void}
+     */
+    _dragTopHandler(e) {
+        const toolbarBottom = window.widgetWindows._getToolbarBottom();
+
+        if (
+            this._fullscreenEnabled &&
+            this._frame.style.top === `${toolbarBottom}px` &&
+            !this._maximized
+        ) {
+            this._maximize();
+            this.takeFocus();
+            this.onmaximize();
+            e.preventDefault();
+        }
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _setupLanguage() {
+        let language = localStorage.languagePreference;
+        if (language === undefined) {
+            language = navigator.language;
+        }
+
+        // For Japanese, put the toolbar on the top.
+        if (language === "ja") {
+            this._body.style.flexDirection = "column";
+            this._body.style.flexGrow = "1";
+            this._toolbar.style.overflowY = "auto";
+            this._toolbar.style.width = "100%";
+            this._toolbar.style.display = "flex";
+            this._toolbar.style.flexShrink = "0";
+        }
+    }
+
+    /**
+     * @public
+     * @param {string} initial
+     * @param {HTMLElement} parent
+     * @returns {HTMLElement}
+     */
+    addInputButton(initial, parent) {
+        const el = this._create("div", "wfbtItem", parent || this._toolbar);
+        el.replaceChildren();
+        const input = document.createElement("input");
+        input.value = initial; // Safe - DOM API escapes automatically
+        el.insertAdjacentElement("afterbegin", input);
+        return input;
+    }
+
+    /**
+     * @public
+     * @param {number} initial
+     * @param {HTMLElement} parent
+     * @param {number} min
+     * @param {number} max
+     * @param {string} classNm
+     * @returns {HTMLElement}
+     */
+    addRangeSlider(initial, parent, min, max, classNm) {
+        const el = this._create("div", "wfbtItem", parent || this._toolbar);
+        const slider = document.createElement("input");
+        slider.type = "range";
+        if (classNm) slider.className = classNm; // Safe - DOM API escapes automatically
+        slider.min = min;
+        slider.max = max;
+        slider.value = initial;
+
+        el.style.height = "250px";
+        el.insertAdjacentElement("afterbegin", slider);
+        slider.style = " position:absolute;transform:rotate(270deg);height:10px;width:250px;";
+        return slider;
+    }
+
+    /**
+     * @deprecated
+     */
+    addSelectorButton(list, initial, parent) {
+        const el = this._create("div", "wfbtItem", parent || this._toolbar);
+        const selector = document.createElement("select");
+        selector.value = initial;
+        el.replaceChildren(selector);
+        for (const i of list) {
+            const newOption = new Option("turtle " + i, i);
+            selector.add(newOption);
+        }
+        return selector;
+    }
+
+    /**
+     * @public
+     * @returns {HTMLElement}
+     */
+    addDivider() {
+        const el = this._create("div", "wfbtHR", this._toolbar);
+        return el;
+    }
+
+    /**
+     * @public
+     * @param {number} index
+     * @param {string} icon
+     * @param {number} iconSize
+     * @param {string} label
+     * @returns {HTMLElement}
+     */
+    modifyButton(index, icon, iconSize, label) {
+        const img = document.createElement("img");
+        img.src = `header-icons/${icon}`;
+        img.title = label;
+        img.alt = label;
+        img.height = iconSize;
+        img.width = iconSize;
+        this._buttons[index].replaceChildren(img);
+        this._buttons[index].setAttribute("aria-label", label);
+        return this._buttons[index];
+    }
+
+    /**
+     * @public
+     * @returns {void}
+     */
+    close() {
+        this.onclose();
+    }
+
+    /**
+     * The title may change, as with the Help Widget.
+     * @public
+     * @returns {void}
+     */
+    updateTitle(title) {
+        const wftTitle = docById(this._key + "WidgetID");
+        if (wftTitle) {
+            wftTitle.textContent = title;
+        }
+        if (this._frame) {
+            this._frame.setAttribute("aria-label", title);
+        }
+    }
+
+    /**
+     * @public
+     * @returns {void}
+     */
+    takeFocus() {
+        window.widgetWindows.focused = this;
+        if (typeof this.onfocused === "function") {
+            this.onfocused();
+        }
+        const windows = docById("floatingWindows");
+        if (windows && windows.children) {
+            const siblings = windows.children;
+            for (let i = 0; i < siblings.length; i++) {
+                siblings[i].style.zIndex = "0";
+                siblings[i].style.opacity = "0.7";
+            }
+        }
+
+        // When in focus, the zIndex of the help must be the highest. Even greater than the input search display block
+        this._frame.style.zIndex = "10000";
+        this._frame.style.opacity = "1";
+    }
+
+    /**
+     * @public
+     * @param {*} icon
+     * @param {*} iconSize
+     * @param {*} label
+     * @param {HTMLElement} parent
+     * @returns {HTMLElement}
+     */
+    addButton(icon, iconSize, label, parent) {
+        const el = this._create("div", "wfbtItem", parent || this._toolbar);
+        const img = document.createElement("img");
+        img.src = `header-icons/${icon}`;
+        img.title = label;
+        img.alt = label;
+        img.height = iconSize;
+        img.width = iconSize;
+        el.replaceChildren(img);
+        makeKeyboardAccessible(el, label);
+        this._buttons.push(el);
+        return el;
+    }
+
+    /**
+     * @public
+     * @returns {WidgetWindow} this
+     */
+    sendToCenter() {
+        // Some widgets call sendToCenter() more than once while opening, so the
+        // flag must stay set until the user interacts with the window.
+        if (this._restorePending) {
+            return this;
+        }
+        const canvas = docById("myCanvas");
+        if (!canvas) {
+            this.setPosition(200, 140);
+            return this;
+        }
+        const fRect = this._frame.getBoundingClientRect();
+        const cRect = canvas.getBoundingClientRect();
+
+        if (cRect.width === 0 || cRect.height === 0) {
+            // The canvas isn't shown so we set some approximate numbers
+            this.setPosition(200, 140);
+            return this;
+        }
+
+        const navHeight = document.querySelector("nav")?.offsetHeight ?? 64;
+        this.setPosition(
+            (cRect.width - fRect.width) / 2,
+            (cRect.height - fRect.height + navHeight) / 2
+        );
+
+        return this;
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _restore() {
+        this._restorePending = false;
+        window.widgetWindows._maximizedCache[this._key] = false;
+        this._maxminIcon.setAttribute("src", "header-icons/icon-expand.svg");
+        if (this._maxminButton) {
+            this._maxminButton.title = _("Maximize window");
+            this._maxminButton.setAttribute("aria-label", _("Maximize window"));
+        }
+        this._maximized = false;
+
+        if (this._savedPos) {
+            this._frame.style.left = this._savedPos[0];
+            this._frame.style.top = this._savedPos[1];
+            this._savedPos = null;
+        }
+        this._overlay(false);
+        this._frame.style.width = "auto";
+        this._frame.style.height = "auto";
+        this._frame.style.minHeight = this._rolled ? "0px" : "420px";
+        this._frame.style.maxWidth = "100vw";
+        this._frame.style.minWidth =
+            window.innerWidth && window.innerWidth <= 600 ? "0px" : "470px";
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _maximize() {
+        this._savedPos = [this._frame.style.left, this._frame.style.top];
+        window.widgetWindows._maximizedCache[this._key] = true;
+        this._maxminIcon.setAttribute("src", "header-icons/icon-contract.svg");
+        if (this._maxminButton) {
+            this._maxminButton.title = _("Restore");
+            this._maxminButton.setAttribute("aria-label", _("Restore"));
+        }
+        this._maximized = true;
+        this.unroll();
+        this.takeFocus();
+
+        const toolbarBottom = window.widgetWindows._getToolbarBottom();
+
+        this._frame.style.width = "100vw";
+        this._frame.style.height = `calc(100vh - ${toolbarBottom}px)`;
+        this._frame.style.left = "0";
+        this._frame.style.top = `${toolbarBottom}px`;
+    }
+
+    /**
+     * @public
+     * @returns {HTMLElement}
+     */
+    getWidgetBody() {
+        return this._widget;
+    }
+
+    /**
+     * @public
+     * @returns {HTMLElement}
+     */
+    getWidgetFrame() {
+        return this._frame;
+    }
+
+    /**
+     * @deprecated
+     */
+    getDragElement() {
+        return this._drag;
+    }
+
+    /**
+     * @public
+     * @returns {void}
+     */
+    onclose() {
+        this.destroy();
+    }
+
+    /**
+     * @public
+     * @returns {void}
+     */
+    destroy() {
+        const isFocusInside =
+            this._frame &&
+            document.activeElement &&
+            (this._frame === document.activeElement ||
+                this._frame.contains(document.activeElement));
+        if (this._widget && this._widgetWheelHandler) {
+            this._widget.removeEventListener("wheel", this._widgetWheelHandler, false);
+            this._widget.removeEventListener("DOMMouseScroll", this._widgetWheelHandler, false);
+        }
+        if (this._frame && this._frame.parentElement) {
+            this._frame.parentElement.removeChild(this._frame);
+        }
+        if (this._overlayframe && this._overlayframe.parentElement) {
+            this._overlayframe.parentElement.removeChild(this._overlayframe);
+        }
+        if (window.widgetWindows.focused === this) {
+            window.widgetWindows.focused = null;
+        }
+        if (this.timerManager) {
+            this.timerManager.clearAll();
+        }
+        delete window.widgetWindows.openWindows[this._key];
+
+        if (isFocusInside) {
+            const remainingWindows = Object.values(window.widgetWindows.openWindows).filter(
+                win => win && win._visible
+            );
+            if (remainingWindows.length > 0) {
+                const nextWin = remainingWindows[remainingWindows.length - 1];
+                nextWin.takeFocus();
+                if (nextWin._frame && typeof nextWin._frame.focus === "function") {
+                    nextWin._frame.focus();
+                }
+            } else if (
+                this._previouslyFocused &&
+                typeof this._previouslyFocused.focus === "function" &&
+                document.contains(this._previouslyFocused)
+            ) {
+                this._previouslyFocused.focus();
+            } else {
+                const canvas = docById("myCanvas");
+                if (canvas && typeof canvas.focus === "function") {
+                    canvas.focus();
+                }
+            }
+        }
+    }
+
+    /**
+     * @public
+     * @returns {WidgetWindow} this
+     */
+    onmaximize() {
+        return this;
+    }
+
+    /**
+     * @public
+     * @returns {boolean}
+     */
+    isMaximized() {
+        return this._maximized;
+    }
+
+    /**
+     * @returns {void}
+     */
+    show() {
+        this._frame.style.display = "block";
+        this._visible = true;
+        window.widgetWindows._handleResize();
+    }
+
+    /**
+     * Keeps a restored position inside the current viewport so that a widget
+     * closed before a browser resize does not reopen off-screen.
+     * @private
+     * @param {number} x
+     * @param {number} y
+     * @returns {[number, number]}
+     */
+    _clampToViewport(x, y) {
+        const toolbarBottom = window.widgetWindows._getToolbarBottom();
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        if (!viewportWidth || !viewportHeight) return [x, y];
+
+        const fRect = this._frame ? this._frame.getBoundingClientRect() : { width: 0, height: 0 };
+        const width = fRect.width || 470;
+        const height = fRect.height || 420;
+
+        const maxX = Math.max(0, viewportWidth - width);
+        const maxY = Math.max(toolbarBottom, viewportHeight - height);
+
+        return [Math.min(Math.max(x, 0), maxX), Math.min(Math.max(y, toolbarBottom), maxY)];
+    }
+
+    /**
+     * @public
+     * @param {number} x
+     * @param {number} y
+     * @returns {WidgetWindow} this
+     */
+    setPosition(x, y) {
+        const toolbarBottom = window.widgetWindows._getToolbarBottom();
+        const top = Math.max(y, toolbarBottom);
+
+        this._frame.style.left = `${x}px`;
+        this._frame.style.top = `${top}px`;
+        window.widgetWindows._posCache[this._key] = [x, top];
+        window.widgetWindows._maximizedCache[this._key] = false;
+        return this;
+    }
+
+    /**
+     * @public
+     * @returns {boolean}
+     */
+    isVisible() {
+        return this._visible;
+    }
+
+    /**
+     * @public
+     * @return {WidgetWindow} this
+     */
+    clear() {
+        this._widget.replaceChildren();
+        this._toolbar.replaceChildren();
+        // The toolbar buttons have just been removed from the DOM, so drop the
+        // references too. Widgets re-add their buttons after clear(), and
+        // modifyButton() addresses them by index — leaving the old entries in
+        // place would push every index past the detached ones.
+        this._buttons = [];
+        return this;
+    }
+
+    /**
+     * @public
+     * @return {WidgetWindow} this
+     *
+     * Clears the widget window not the toolbar
+     */
+    clearScreen() {
+        this._widget.replaceChildren();
+        return this;
+    }
+
+    /**
+     * @private
+     * @return {WidgetWindow} this
+     */
+    _rollup() {
+        this._rolled = true;
+        this._body.style.display = "none";
+        this._frame.style.width = "auto";
+        this._frame.style.height = "auto";
+        this._frame.style.minHeight = "0px";
+        if (this._rollButton) {
+            this._rollButton.classList.add("plus");
+            this._rollButton.setAttribute("aria-expanded", "false");
+            this._rollButton.setAttribute("aria-label", _("Expand window"));
+            this._rollButton.title = _("Expand");
+        }
+        return this;
+    }
+
+    /**
+     * @public
+     * @return {WidgetWindow} this
+     */
+    unroll() {
+        this._rolled = false;
+        this._body.style.display = "flex";
+        if (this._maximized) {
+            const toolbarBottom = window.widgetWindows._getToolbarBottom();
+            this._frame.style.width = "100vw";
+            this._frame.style.height = `calc(100vh - ${toolbarBottom}px)`;
+            this._frame.style.left = "0";
+            this._frame.style.top = `${toolbarBottom}px`;
+            this._frame.style.minHeight = "0px";
+        } else {
+            this._frame.style.width = "auto";
+            this._frame.style.height = "auto";
+            this._frame.style.minHeight = "420px";
+            this._frame.style.maxWidth = "100vw";
+            if (window.innerWidth && window.innerWidth <= 600) {
+                this._frame.style.minWidth = "0px";
+            } else {
+                this._frame.style.minWidth = "470px";
+            }
+
+            // Ensure expanding a rolled-up window does not leave it extending below or outside the viewport.
+            const curX = parseFloat(this._frame.style.left) || 0;
+            const curY = parseFloat(this._frame.style.top) || 0;
+            const clamped = this._clampToViewport(curX, curY);
+            if (clamped[0] !== curX || clamped[1] !== curY) {
+                this.setPosition(clamped[0], clamped[1]);
+            }
+        }
+        if (this._rollButton) {
+            if (this._rollButton.classList.contains("plus")) {
+                this._rollButton.classList.remove("plus");
+            }
+            this._rollButton.setAttribute("aria-expanded", "true");
+            this._rollButton.setAttribute("aria-label", _("Roll up window"));
+            this._rollButton.title = _("Minimize");
+        }
+        return this;
+    }
+}
+
+/**
+ *
+ * @param {Object} widget
+ * @param {string} title
+ * @param {string} saveAs
+ * @returns {WidgetWindow} this
+ */
+window.widgetWindows.windowFor = (widget, title, saveAs, fullscreen) => {
+    let key = undefined;
+    // Check for a blockNo attribute
+    if (typeof widget.blockNo !== "undefined") key = widget.blockNo;
+    // Fall back on the next best thing we have
+    else key = saveAs || title;
+
+    if (typeof window.widgetWindows.openWindows[key] === "undefined") {
+        const win = new WidgetWindow(key, title, fullscreen);
+        // The constructor restores a previously saved position, so only center
+        // the window the first time it is opened.
+        if (!window.widgetWindows._posCache[key] || window.widgetWindows._maximizedCache[key]) {
+            win.sendToCenter();
+        }
+        window.widgetWindows._maximizedCache[key] = false;
+        window.widgetWindows.openWindows[key] = win;
+    }
+
+    return window.widgetWindows.openWindows[key].unroll();
+};
+
+/**
+ * @deprecated
+ */
+window.widgetWindows.clear = name => {
+    const win = window.widgetWindows.openWindows[name];
+    if (!win) return;
+    if (typeof win.onclose === "function") win.onclose();
+};
+
+/**
+ * @public
+ * @param {string} name
+ * @returns {boolean}
+ */
+window.widgetWindows.isOpen = name => {
+    return !!window.widgetWindows.openWindows[name];
+};
+
+/**
+ * @public
+ * @returns {void}
+ */
+window.widgetWindows.hideAllWindows = () => {
+    Object.values(window.widgetWindows.openWindows).forEach(win => {
+        if (win !== undefined) {
+            win._frame.style.display = "none";
+            win._visible = false;
+            win._overlay(false, false);
+        }
+    });
+    window.widgetWindows.focused = null;
+};
+
+/**
+ * @public
+ * @param {string} name
+ */
+window.widgetWindows.hideWindow = name => {
+    const win = window.widgetWindows.openWindows[name];
+    if (!win) return;
+    win._frame.style.display = "none";
+    win._visible = false;
+    if (window.widgetWindows.focused === win) {
+        window.widgetWindows.focused = null;
+    }
+};
+
+/**
+ * @public
+ * @param {string} name
+ */
+window.widgetWindows.closeWindow = name => {
+    const win = window.widgetWindows.openWindows[name];
+    if (!win) return;
+    if (typeof win.close === "function") {
+        win.close();
+    }
+};
+
+/**
+ * @returns {void}
+ */
+window.widgetWindows.showWindows = () => {
+    Object.values(window.widgetWindows.openWindows).forEach(win => {
+        if (win !== undefined) {
+            win._frame.style.display = "block";
+            win._visible = true;
+        }
+    });
+    window.widgetWindows._handleResize();
+};

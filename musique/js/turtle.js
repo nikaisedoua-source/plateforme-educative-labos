@@ -1,0 +1,1063 @@
+/**
+ * @file This contains the prototype of the Turtle component.
+ * @author Walter Bender
+ *
+ * @copyright 2014-2020 Walter Bender
+ * @copyright 2020 Anindya Kundu
+ *
+ * @license
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the The GNU Affero General Public
+ * License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ * You should have received a copy of the GNU Affero General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA.
+ */
+
+/*
+   global
+
+   createjs, DEFAULTVOLUME, importMembers, Painter, Singer,
+   DEFAULTVOICE, retryWithBackoff, base64Encode, escapeHTML
+ */
+/* exported Turtle */
+/**
+ * Class pertaining to each turtle.
+ *
+ * @class
+ * @classdesc This is the prototype of an individual Turtle. It owns per-turtle lifecycle state
+ * and its Singer and Painter components, and acts as a bridge between the Turtle model and view.
+ *
+ * External code instantiates this class, and can access all the members
+ * of TurtleView and TurtleModel.
+ *
+ * This component contains properties and controls for all actions
+ * corresponding to a single turtle. Also contains the methods for
+ * caching.
+ *
+ * Private methods' names begin with underscore '_".
+ * Unused methods' names begin with double underscore '__'.
+ * Internal functions' names are in PascalCase.
+ */
+class Turtle {
+    /**
+     * @constructor
+     * @param {Number} id - unique ID of Turtle
+     * @param {String} name - name of Turtle
+     * @param {Object} turtles - Turtles object (common to all turtles)
+     * @param {Number} startBlock - start block id
+     */
+    constructor(activity, id, name, turtles, startBlock) {
+        // Import members of model and view (arguments only for model)
+        importMembers(this, "", [activity, id, name, turtles, startBlock]);
+
+        this.activity = activity;
+        this.singer = new Singer(this); // for music logic
+        this.painter = new Painter(this); // for drawing logic
+
+        this._waitTime = 0;
+        // Number of EmbeddedGraphicsScheduler.schedule() calls for this
+        // turtle that are still in flight (0 means none are pending).
+        this.embeddedGraphicsPending = 0;
+        // Bumped whenever embeddedGraphicsPending is reset (turtle init,
+        // run start). A schedule() call started in an earlier generation
+        // that is still running when a reset happens must not decrement
+        // the new generation's count when it eventually finishes.
+        this.embeddedGraphicsGeneration = 0;
+
+        // Widget-related attributes
+        this.inSetTimbre = false;
+
+        this._blinkFinished = true; // whether not blinking or blinking
+
+        this._transportTime = null;
+        this._transportEventId = null;
+        this.runGeneration = 0;
+    }
+
+    /**
+     * @returns {Boolean} whether turtle is blinking
+     */
+    blinking() {
+        return !this._blinkFinished;
+    }
+
+    /**
+     * Sets wait duration of turtle.
+     *
+     * @param secs
+     * @returns {void}
+     */
+    doWait(secs) {
+        this._waitTime = Number(secs) * 1000;
+    }
+
+    /**
+     * Internal function for creating cache.
+     * Uses bounded retry with exponential backoff to handle the race
+     * condition where container bounds are not yet available.
+     *
+     * @private
+     * @returns {Promise} Resolves when cache is created, rejects after max retries.
+     */
+    _createCache() {
+        const that = this;
+        const MAX_RETRIES = 20;
+        const INITIAL_DELAY = 50;
+
+        return retryWithBackoff({
+            check: () => {
+                that.bounds = that.container.getBounds();
+                return that.bounds;
+            },
+            onSuccess: bounds => {
+                that.container.cache(bounds.x, bounds.y, bounds.width, bounds.height);
+            },
+            maxRetries: MAX_RETRIES,
+            initialDelay: INITIAL_DELAY,
+            errorMessage:
+                "Turtle._createCache: could not get container bounds after " +
+                MAX_RETRIES +
+                " attempts"
+        });
+    }
+
+    /**
+     * Internal function for updating cache.
+     * Uses bounded retry with exponential backoff to handle the race
+     * condition where bounds are not yet available.
+     *
+     * @returns {Promise} Resolves when cache is updated, rejects after max retries.
+     */
+    updateCache() {
+        const that = this;
+        const MAX_RETRIES = 15;
+        const INITIAL_DELAY = 100;
+
+        return retryWithBackoff({
+            check: () => that.bounds !== null && that.container && that.container.bitmapCache,
+            onSuccess: () => {
+                that.container.updateCache();
+                that.activity.refreshCanvas();
+            },
+            onRetry: attempt => {},
+            maxRetries: MAX_RETRIES,
+            initialDelay: INITIAL_DELAY,
+            errorMessage:
+                "Turtle.updateCache: bounds not available after " + MAX_RETRIES + " attempts"
+        });
+    }
+
+    /**
+     * Stops blinking of turtle if not already finished.
+     * Sets timeout to null and _blinkFinished boolean to true
+     * (if they have not been already changed).
+     */
+    stopBlink() {
+        // eslint-disable-next-line eqeqeq
+        if (this._blinkTimeout != null || !this._blinkFinished) {
+            const timerManager =
+                this.activity && this.activity.logo ? this.activity.logo._timerManager : null;
+            if (timerManager && typeof timerManager.clearTimeout === "function") {
+                timerManager.clearTimeout(this._blinkTimeout);
+            } else {
+                clearTimeout(this._blinkTimeout);
+            }
+            this._blinkTimeout = null;
+
+            this.container.visible = true;
+            this.activity.refreshCanvas();
+            this._blinkFinished = true;
+        }
+    }
+
+    /**
+     * Causes turtle to blink (toggle turtle's visibility) every 100 ms.
+     */
+
+    blink(duration, volume) {
+        // Suppress blinking when using cursorout and cursorover
+        // sensors to prevent multiple triggers.
+        if ("CursorOver" + this.id in this.listeners || "CursorOut" + this.id in this.listeners)
+            return;
+
+        // No time to blink for really short notes. (t = 1 / duration)
+        if (duration > 16) {
+            return;
+        }
+
+        this.stopBlink();
+        this._blinkFinished = false;
+
+        this.container.visible = false;
+        this.activity.refreshCanvas();
+        const finishBlink = () => {
+            this._blinkTimeout = null;
+            this._blinkFinished = true;
+            this.container.visible = true;
+            this.activity.refreshCanvas();
+        };
+        const timerManager =
+            this.activity && this.activity.logo ? this.activity.logo._timerManager : null;
+        this._blinkTimeout =
+            timerManager && typeof timerManager.setTimeout === "function"
+                ? timerManager.setTimeout(finishBlink, 100)
+                : setTimeout(finishBlink, 100);
+    }
+
+    /**
+     * Initialises turtle state variables.
+     *
+     * @param {Boolean} suppressOutput - whether to suppress output
+     * @returns {void}
+     */
+    initTurtle(suppressOutput) {
+        this.doWait(0);
+        this.endOfClampSignals = {};
+        this.butNotThese = {};
+
+        this.embeddedGraphicsPending = 0;
+        this.embeddedGraphicsGeneration += 1;
+
+        this.inSetTimbre = false;
+
+        // Clean up pending delay timers on this turtle before reinitializing
+        if (this.delayTimeout !== null && typeof this.delayTimeout !== "undefined") {
+            if (this.activity && this.activity.logo && this.activity.logo._timerManager) {
+                this.activity.logo._timerManager.clearTimeout(this.delayTimeout);
+            } else if (typeof clearTimeout === "function") {
+                clearTimeout(this.delayTimeout);
+            }
+            this.delayTimeout = null;
+        }
+
+        // Clean up active audio voices and pending unhighlight timers for this turtle before reinitializing
+        if (this.singer) {
+            if (typeof this.singer.killAllVoices === "function") {
+                this.singer.killAllVoices();
+            }
+            if (this.singer._unhighlightTimers) {
+                if (this.activity && this.activity.logo && this.activity.logo._timerManager) {
+                    for (const blk in this.singer._unhighlightTimers) {
+                        this.activity.logo._timerManager.clearTimeout(
+                            this.singer._unhighlightTimers[blk]
+                        );
+                    }
+                }
+                this.singer._unhighlightTimers = {};
+            }
+        }
+
+        // Reset child components via their own canonical lifecycles
+        if (this.painter && typeof this.painter.reset === "function") {
+            this.painter.reset();
+        }
+        if (this.singer && typeof this.singer.reset === "function") {
+            this.singer.reset(suppressOutput);
+            if (typeof DEFAULTVOICE !== "undefined") {
+                this.singer.instrumentNames = [DEFAULTVOICE];
+            }
+        }
+    }
+
+    // ================================ CONTROLLER ============================
+
+    /**
+     * @returns {Number} waiting delay of Turtle
+     */
+    get waitTime() {
+        return this._waitTime;
+    }
+
+    // ================================ MODEL =================================
+
+    /**
+     * @returns {Number} unique ID of Turtle
+     */
+    get id() {
+        return this._id;
+    }
+
+    /**
+     * @returns {String} name of Turtle
+     */
+    get name() {
+        return this._name;
+    }
+
+    /**
+     * @returns {Object} Turtles object
+     */
+    get turtles() {
+        return this._turtles;
+    }
+
+    /**
+     * @param {Object} startBlock - start block object associated with Turtle
+     */
+    set startBlock(startBlock) {
+        this._startBlock = startBlock;
+    }
+
+    /**
+     * @returns {Object} start block object associated with Turtle
+     */
+    get startBlock() {
+        return this._startBlock;
+    }
+
+    /**
+     * @param {Object[]} queue - queue of blocks executed by this Turtle
+     */
+    set queue(queue) {
+        this._queue = queue;
+    }
+
+    /**
+     * @returns {Object[]} queue of blocks executed by this Turtle
+     */
+    get queue() {
+        return this._queue;
+    }
+
+    /**
+     * @param {Object[]} queue
+     */
+    set parentFlowQueue(queue) {
+        this._parentFlowQueue = queue;
+    }
+
+    /**
+     * @returns {Object[]}
+     */
+    get parentFlowQueue() {
+        return this._parentFlowQueue;
+    }
+
+    /**
+     * @param {Object[]} queue
+     */
+    set unhighlightQueue(queue) {
+        this._unhighlightQueue = queue;
+    }
+
+    /**
+     * @returns {Object[]}
+     */
+    get unhighlightQueue() {
+        return this._unhighlightQueue;
+    }
+
+    /**
+     * @param {Object[]} queue
+     */
+    set parameterQueue(queue) {
+        this._parameterQueue = queue;
+    }
+
+    /**
+     * @returns {Object[]}
+     */
+    get parameterQueue() {
+        return this._parameterQueue;
+    }
+
+    /**
+     * @param {number[]} boundaries
+     */
+    set actionBoundaries(boundaries) {
+        this._actionBoundaries = boundaries;
+    }
+
+    /**
+     * @returns {number[]}
+     */
+    get actionBoundaries() {
+        return this._actionBoundaries;
+    }
+
+    /**
+     * @param {Function[]} listeners - list of listeners
+     */
+    set listeners(listeners) {
+        this._listeners = listeners;
+    }
+
+    /**
+     * @returns {Function[]} list of listeners
+     */
+    get listeners() {
+        return this._listeners;
+    }
+
+    /**
+     * @param {Object[]} media - text, images
+     */
+    set media(media) {
+        this._media = media;
+    }
+
+    /**
+     * @returns {Object[]} text, images
+     */
+    get media() {
+        return this._media;
+    }
+
+    /**
+     * @param {Number} x - x coordinate
+     */
+    set x(x) {
+        this._x = x;
+    }
+
+    /**
+     * @returns {Number} x coordinate
+     */
+    get x() {
+        return this._x;
+    }
+
+    /**
+     * @param {Number} y - y coordinate
+     */
+    set y(y) {
+        this._y = y;
+    }
+
+    /**
+     * @returns {Number} y coordinate
+     */
+    get y() {
+        return this._y;
+    }
+
+    /**
+     * @param {Boolean} running - whether Turtle is running
+     */
+    set running(running) {
+        this._running = running;
+    }
+
+    /**
+     * @returns {Boolean} whether Turtle is running
+     */
+    get running() {
+        return this._running;
+    }
+
+    /**
+     * @param {Boolean} trash - whether Turtle is trashed
+     */
+    set inTrash(trash) {
+        this._trash = trash;
+    }
+
+    /**
+     * @returns {Boolean} whether Turtle is trashed
+     */
+    get inTrash() {
+        return this._trash;
+    }
+
+    // ================================ VIEW ==================================
+
+    /**
+     * @returns {Object} createjs object of start block (decoration)
+     */
+    get decorationBitmap() {
+        return this._decorationBitmap;
+    }
+
+    /**
+     * @param {Object} container - createjs container for Turtle
+     * @returns {void}
+     */
+    set container(container) {
+        this._container = container;
+    }
+
+    /**
+     * @returns {Object} createjs container for Turtle
+     */
+    get container() {
+        return this._container;
+    }
+
+    /**
+     * @param {Object} bitmap - createjs bitmap object for Turtle
+     */
+    set bitmap(bitmap) {
+        this._bitmap = bitmap;
+    }
+
+    /**
+     * @returns {Object} createjs bitmap object for Turtle
+     */
+    get bitmap() {
+        return this._bitmap;
+    }
+
+    /**
+     * @param {Object} imageContainer - createjs container object
+     */
+    set imageContainer(imageContainer) {
+        this._imageContainer = imageContainer;
+    }
+
+    /**
+     * @returns {Object} createjs container object
+     */
+    get imageContainer() {
+        return this._imageContainer;
+    }
+
+    /**
+     * @param {Object} penstrokes - createjs bitmap object
+     */
+    set penstrokes(penstrokes) {
+        this._penstrokes = penstrokes;
+    }
+
+    /**
+     * @returns {Object} createjs bitmap object
+     */
+    get penstrokes() {
+        return this._penstrokes;
+    }
+
+    /**
+     * @param {Boolean} skinChanged - whether turtle shell has been changed
+     */
+    set skinChanged(skinChanged) {
+        this._skinChanged = skinChanged;
+    }
+
+    /**
+     * @returns {Boolean} whether turtle shell has been changed
+     */
+    get skinChanged() {
+        return this._skinChanged;
+    }
+
+    /**
+     * @param {Number} orientation - turtle's orientation (angles)
+     */
+    set orientation(orientation) {
+        this._orientation = orientation;
+    }
+
+    /**
+     * @returns {Number} Turtle's orientation (angles)
+     */
+    get orientation() {
+        return this._orientation;
+    }
+
+    /**
+     * @returns {Object} overlay canvas element
+     */
+    get canvas() {
+        return this._canvas;
+    }
+
+    /**
+     * @returns {Object} overlay canvas context
+     */
+    get ctx() {
+        return this._ctx;
+    }
+}
+
+/**
+ * Class pertaining to Turtle Model.
+ *
+ * @class
+ * @classdesc This is the prototype of the Model for the Turtle component.
+ * It should store the data structures that control behavior of the model.
+ */
+Turtle.TurtleModel = class {
+    /**
+     * @constructor
+     * @param {Number} id - unique ID of Turtle
+     * @param {String} name - name of Turtle
+     * @param {Object} turtles - Turtles object (common to all turtles)
+     */
+    constructor(activity, id, name, turtles, startBlock) {
+        this.activity = activity;
+        this._id = id; // unique ID of turtle
+        this._name = name; // name of the turtle
+        this._turtles = turtles; // object handling behavior of all turtles
+
+        this._startBlock = startBlock; // Which start block is associated with this turtle?
+        this._queue = []; // Queue of blocks this turtle is executing
+        this._parentFlowQueue = [];
+        this._unhighlightQueue = [];
+        this._parameterQueue = [];
+        this._actionBoundaries = [];
+
+        this._listeners = {}; // Event listeners
+        // When we leave a clamp block, we need to dispatch a signal
+        this.endOfClampSignals = {};
+        // Don't dispatch these signals (when exiting note counter or
+        // interval measure).
+        this.butNotThese = {};
+
+        // Used to halt runtime during input
+        this.delayTimeout = null;
+        this.delayParameters = {};
+
+        this._media = []; // media (text, images) we need to remove on clear
+
+        this._x = 0; // x coordinate
+        this._y = 0; // y coordinate
+
+        this._running = false; // is the turtle running?
+        this._trash = false; // in the trash?
+    }
+
+    /**
+     * Renames start (of corresponding Turtle) block.
+     *
+     * @param {String} name - name string which is assigned to startBlock
+     */
+    rename(name) {
+        this._name = name;
+
+        const startBlock = this._startBlock;
+        // Use the name on the label of the start block
+        // eslint-disable-next-line eqeqeq
+        if (startBlock != null) {
+            startBlock.overrideName = this._name;
+            startBlock.collapseText.text = this._name;
+            startBlock.regenerateArtwork(false);
+            startBlock.value = this._turtles.getIndexOfTurtle(this);
+        }
+    }
+};
+
+/**
+ * Class pertaining to Turtle View.
+ *
+ * @class
+ * @classdesc This is the prototype of the View for the Turtle component.
+ * It should make changes to the view, while using members of the Model
+ * through Turtle (controller). An action may require updating the state
+ * (of the Model), which it can do by calling methods of the Model, also
+ * through Turtle (controller).
+ */
+Turtle.TurtleView = class {
+    /**
+     * @constructor
+     */
+    constructor() {
+        // createjs object of start block (decoration)
+        this._decorationBitmap = null;
+        this._decorationBaseScale = 0.5; // Base scale factor for decoration (27.5 / image.width)
+
+        this._container = null; // createjs container
+        this._bitmap = null; // createjs bitmap
+        this._imageContainer = null;
+        this._penstrokes = null;
+
+        this._skinChanged = false; // should we reskin the turtle on clear?
+        this._orientation = 0; // orientation of the turtle sprite
+
+        this._canvas = document.getElementById("overlayCanvas");
+        this._ctx = this._canvas.getContext("2d");
+
+        // Bumped on every doShowImage call so a slower, overlapping request
+        // can tell -- once its await resolves -- that a newer one already
+        // won and back off instead of clobbering it.
+        this._imageRequestId = 0;
+    }
+
+    /**
+     * Adds an image object to the canvas (shows an image).
+     * Supports both static images and animated GIFs.
+     *
+     * @param {number} size - size of image
+     * @param {string} myImage - image data URL or path
+     * @async
+     */
+    async doShowImage(size, myImage) {
+        // Is there a JS test for a valid image path?
+        if (myImage === null) {
+            return;
+        }
+
+        const gifAnimator = this.activity.gifAnimator;
+        const requestId = ++this._imageRequestId;
+
+        // HARD CLEANUP: kill previous GIF before loading a new one
+        if (this._activeGifId && gifAnimator) {
+            gifAnimator.stopAnimation(this._activeGifId);
+
+            // Drop this turtle's own bookkeeping record for the GIF we just
+            // stopped, too -- stopAnimation() only frees GIFAnimator's side.
+            // Left in place, it lingers in _media until an explicit "clear"
+            // (many looping-animation projects never call one), and every
+            // turtle move iterates the whole array via _updateMediaPositions().
+            this._media = this._media.filter(
+                item => !(item.type === "gif" && item.id === this._activeGifId)
+            );
+
+            //Clear the old GIF pixels from overlay canvas
+            const ctx = this._ctx;
+            ctx.save();
+            ctx.translate(this.container.x, this.container.y);
+            ctx.rotate((this.orientation * Math.PI) / 180);
+
+            // Clear slightly larger region to remove ghosts
+            ctx.clearRect(-500, -500, 1000, 1000);
+            ctx.restore();
+
+            this._activeGifId = null;
+        }
+
+        // Check if it's a GIF and try to animate it
+        if (gifAnimator && gifAnimator.isAnimatedGIF(myImage)) {
+            try {
+                const scaledSize = Number(size);
+                const gifId = await gifAnimator.createAnimation(
+                    myImage,
+                    this._canvas, // overlay canvas
+                    this.container.x,
+                    this.container.y,
+                    scaledSize,
+                    scaledSize,
+                    this.orientation
+                );
+
+                // If animation was created successfully
+                if (gifId !== null) {
+                    // A newer doShowImage call already ran while we were
+                    // awaiting createAnimation -- it owns _activeGifId/_media
+                    // now, so stop the animation we just created and bail
+                    // out instead of clobbering the newer request's state.
+                    if (requestId !== this._imageRequestId) {
+                        gifAnimator.stopAnimation(gifId);
+                        return;
+                    }
+
+                    // Register as the ONLY active GIF for this turtle
+                    this._activeGifId = gifId;
+
+                    this._media.push({
+                        type: "gif",
+                        id: gifId,
+                        stop: () => gifAnimator.stopAnimation(gifId)
+                    });
+
+                    this.activity.refreshCanvas();
+                    return;
+                }
+
+                // If gifId is null, it's a static GIF (1 frame), fall through
+            } catch (error) {
+                console.warn("GIF animation failed, falling back to static image:", error);
+                // Fall through to static image handling
+            }
+        }
+        //original static image code (for non-GIFs or static GIFs)
+        const image = new Image();
+        image.onload = () => {
+            // Same overlap guard as the GIF path above: don't add a stale
+            // static image on top of whatever a newer request set up.
+            if (requestId !== this._imageRequestId) {
+                return;
+            }
+
+            const bitmap = new createjs.Bitmap(image);
+            this.imageContainer.addChild(bitmap);
+            this._media.push(bitmap);
+            bitmap.scaleX = Number(size) / image.width;
+            bitmap.scaleY = bitmap.scaleX;
+            bitmap.scale = bitmap.scaleX;
+            bitmap.x = this.container.x;
+            bitmap.y = this.container.y;
+            bitmap.regX = image.width / 2;
+            bitmap.regY = image.height / 2;
+            bitmap.rotation = this.orientation;
+            this.activity.refreshCanvas();
+        };
+        image.src = myImage;
+    }
+    /**
+     * Updates positions of all media (including GIFs) when turtle moves
+     * @private
+     */
+    _updateMediaPositions() {
+        if (!this._media) {
+            return;
+        }
+
+        const gifAnimator = this.activity.gifAnimator;
+
+        this._media.forEach(item => {
+            if (item.type === "gif" && gifAnimator) {
+                // Update GIF animation position
+                gifAnimator.updatePosition(
+                    item.id,
+                    this.container.x,
+                    this.container.y,
+                    this.orientation
+                );
+            } else if (item instanceof createjs.Bitmap) {
+                // Update static image position
+                item.x = this.container.x;
+                item.y = this.container.y;
+                item.rotation = this.orientation;
+            }
+        });
+    }
+
+    /**
+     * Adds an image object to the turtle.
+     *
+     * @param size - size of image
+     * @param myImage - path of image
+     */
+    doTurtleShell(size, myImage) {
+        if (myImage === null) {
+            return;
+        }
+
+        const shellSize = Number(size);
+        const image = new Image();
+        image.src = myImage;
+
+        image.onload = () => {
+            this.container.removeChild(this._bitmap);
+            this._bitmap = new createjs.Bitmap(image);
+            this.container.addChild(this._bitmap);
+            this._bitmap.scaleX = shellSize / image.width;
+            this._bitmap.scaleY = this._bitmap.scaleX;
+            this._bitmap.scale = this._bitmap.scaleX;
+            this._bitmap.x = 0;
+            this._bitmap.y = 0;
+            this._bitmap.regX = image.width / 2;
+            this._bitmap.regY = image.height / 2;
+            this._bitmap.rotation = this.orientation;
+            this._skinChanged = true;
+
+            this.container.uncache();
+            const bounds = this.container.getBounds();
+            this.container.cache(bounds.x, bounds.y, bounds.width, bounds.height);
+
+            // Recalculate the hit area as well
+            const hitArea = new createjs.Shape();
+            hitArea.graphics.beginFill("#FFF").drawRect(0, 0, bounds.width, bounds.height);
+            hitArea.x = -bounds.width / 2;
+            hitArea.y = -bounds.height / 2;
+            this.container.hitArea = hitArea;
+
+            const startBlock = this._startBlock;
+            // eslint-disable-next-line eqeqeq
+            if (startBlock != null) {
+                // eslint-disable-next-line eqeqeq
+                if (this._decorationBitmap != null) {
+                    startBlock.container.removeChild(this._decorationBitmap);
+                }
+                this._decorationBitmap = new createjs.Bitmap(myImage);
+                startBlock.container.addChild(this._decorationBitmap);
+                this._decorationBitmap.name = "decoration";
+
+                // Store the base scale factor for use in resizeDecoration
+                this._decorationBaseScale = 27.5 / image.width;
+
+                const width = startBlock.width;
+                this._decorationBitmap.x = width - (30 * startBlock.protoblock.scale) / 2;
+                this._decorationBitmap.y = (20 * startBlock.protoblock.scale) / 2;
+                this._decorationBitmap.scaleX =
+                    (this._decorationBaseScale * startBlock.protoblock.scale) / 2;
+                this._decorationBitmap.scaleY =
+                    ((27.5 / image.height) * startBlock.protoblock.scale) / 2;
+                this._decorationBitmap.scale =
+                    (this._decorationBaseScale * startBlock.protoblock.scale) / 2;
+                startBlock.updateCache();
+            }
+
+            this.activity.refreshCanvas();
+        };
+    }
+
+    /**
+     * Resizes decoration by width and scale.
+     *
+     * @param scale - resize decoration by scale
+     * @param width - resize decoration by width
+     */
+    resizeDecoration(scale, width) {
+        if (!this._decorationBitmap) {
+            return;
+        }
+        const w = width !== undefined ? width : this._startBlock ? this._startBlock.width : 0;
+        this._decorationBitmap.x = w - (30 * scale) / 2;
+        this._decorationBitmap.y = (20 * scale) / 2; // Use 20 to match doTurtleShell
+        this._decorationBitmap.scaleX =
+            this._decorationBitmap.scaleY =
+            this._decorationBitmap.scale =
+                (this._decorationBaseScale * scale) / 2;
+    }
+
+    /**
+     * Adds a text object to the canvas with auto-wrapping.
+     *
+     * @param  size - specifies text size
+     * @param  myText - string of text to be displayed
+     */
+    doShowText(size, myText) {
+        if (myText === null) {
+            return;
+        }
+
+        const textList = typeof myText !== "string" ? [myText.toString()] : myText.split("\\n");
+        const textSize = size.toString() + "px " + this.painter.font;
+
+        // Skip wrapping for rotated text.
+        const isRotated = this.orientation % 360 !== 0;
+
+        let maxWidth = Infinity;
+        if (!isRotated) {
+            const stageCanvas = this.turtles.stage && this.turtles.stage.canvas;
+            const canvasWidth = stageCanvas ? stageCanvas.width : window.innerWidth;
+            const available = canvasWidth - this.container.x - 20;
+            maxWidth = Math.max(size, available); // at least one char wide
+        }
+
+        const wrapText = (str, maxW) => {
+            if (maxW === Infinity) return [str];
+
+            const lines = [];
+            const tempText = new createjs.Text("", textSize, this.painter.canvasColor);
+            let currentLine = "";
+
+            for (let j = 0; j < str.length; j++) {
+                const testLine = currentLine + str[j];
+                tempText.text = testLine;
+                if (tempText.getMeasuredWidth() > maxW && currentLine.length > 0) {
+                    lines.push(currentLine);
+                    currentLine = str[j];
+                } else {
+                    currentLine = testLine;
+                }
+            }
+            if (currentLine.length > 0) {
+                lines.push(currentLine);
+            }
+            return lines.length > 0 ? lines : [str];
+        };
+
+        let currentYOffset = 0;
+
+        for (let i = 0; i < textList.length; i++) {
+            const wrappedLines = wrapText(textList[i], maxWidth);
+
+            for (let k = 0; k < wrappedLines.length; k++) {
+                const lineContent = wrappedLines[k];
+                const text = new createjs.Text(lineContent, textSize, this.painter.canvasColor);
+                text.textAlign = "left";
+                text.textBaseline = "alphabetic";
+                this.turtles.stage.addChild(text);
+                this._media.push(text);
+                text.x = this.container.x;
+                text.y = this.container.y + currentYOffset;
+                text.rotation = this.orientation;
+                currentYOffset += text.getMeasuredHeight() + size * 0.2;
+
+                const xScaled = text.x * this.turtles.scale;
+                const yScaled = text.y * this.turtles.scale;
+                const sizeScaled = size * this.turtles.scale;
+                // Both come from the user, so escape them: a bare "&" or "<"
+                // makes the whole SVG invalid and nothing of it renders.
+                this.painter.svgOutput +=
+                    '<text x="' +
+                    xScaled +
+                    '" y = "' +
+                    yScaled +
+                    '" fill="' +
+                    this.painter.canvasColor +
+                    '" font-family = "' +
+                    escapeHTML(this.painter.font) +
+                    '" font-size = "' +
+                    sizeScaled +
+                    '">' +
+                    escapeHTML(lineContent) +
+                    "</text>";
+            }
+        }
+        this.activity.artworkRevision = (this.activity.artworkRevision || 0) + 1;
+        this.activity.refreshCanvas();
+    }
+
+    /**
+     * Async creation of bitmap from SVG data.
+     *
+     * @param {String} data - SVG data
+     * @param {Function} refreshCanvas - callback to refresh canvas
+     * @returns {void}
+     */
+    makeTurtleBitmap(data, activity, useTurtleArtwork) {
+        // Works with Chrome, Safari, Firefox (untested on IE)
+        const img = new Image();
+
+        img.onload = () => {
+            if (this._skinChanged) {
+                return;
+            }
+
+            const bitmap = new createjs.Bitmap(img);
+
+            this._bitmap = bitmap;
+            this._bitmap.regX = 27 | 0;
+            this._bitmap.regY = 27 | 0;
+            this._bitmap.cursor = "pointer";
+            this.container.addChild(this._bitmap);
+            this._createCache();
+
+            const startBlock = this._startBlock;
+            // eslint-disable-next-line eqeqeq
+            if (useTurtleArtwork && startBlock != null) {
+                // eslint-disable-next-line eqeqeq
+                if (this._decorationBitmap != null) {
+                    startBlock.container.removeChild(this._decorationBitmap);
+                }
+                startBlock.updateCache();
+                this._decorationBitmap = this._bitmap.clone();
+                this._decorationBitmap.regX = 0;
+                this._decorationBitmap.regY = 0;
+                this._decorationBitmap.rotation = 0;
+                startBlock.container.addChild(this._decorationBitmap);
+                this._decorationBitmap.name = "decoration";
+                const width = startBlock.width;
+                const offset = 30;
+
+                const baseScale = img.width ? 27.5 / img.width : 0.5;
+                this._decorationBaseScale = baseScale;
+
+                this._decorationBitmap.x = width - (offset * startBlock.protoblock.scale) / 2;
+                this._decorationBitmap.y = (20 * startBlock.protoblock.scale) / 2;
+                this._decorationBitmap.scaleX =
+                    this._decorationBitmap.scaleY =
+                    this._decorationBitmap.scale =
+                        (baseScale * startBlock.protoblock.scale) / 2;
+                startBlock.updateCache();
+            }
+
+            activity.refreshCanvas();
+        };
+
+        img.src = "data:image/svg+xml;base64," + window.btoa(base64Encode(data));
+    }
+};
+
+if (typeof window !== "undefined") {
+    window.Turtle = Turtle;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = Turtle;
+}

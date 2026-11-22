@@ -1,0 +1,15 @@
+node_modules/
+*~
+coverage/
+.DS_Store
+**/.DS_Store
+Docs/architecture/dependency-analysis-report.json
+Docs/architecture/dev_architecture.html
+!Docs/architecture/*.svg
+
+# Lighthouse CI
+.lighthouseci/
+
+# Stryker mutation testing
+.stryker-tmp/
+reports/

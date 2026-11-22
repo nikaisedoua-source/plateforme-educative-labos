@@ -1,0 +1,683 @@
+// Copyright (c) 2021 Walter Bender
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+//
+// Note: This code is inspired by the Python Turtle Blocks project
+// (https://github.com/walterbender/turtleart), but implemented from
+// scratch. -- Walter Bender, October 2014.
+
+/*
+   globals _, docById, platformColor, doSVG, createjs, _THIS_IS_MUSIC_BLOCKS_, pubsub
+ */
+
+/*
+   exported PlanetInterface
+ */
+
+/**
+ * Represents an interface for interacting with a planet.
+ * @param {object} activity - The activity object associated with the interface.
+ */
+class PlanetInterface {
+    constructor(activity) {
+        this.planet = null;
+        this.iframe = null;
+        this.mainCanvas = null;
+        this.activity = activity;
+        // Last generated thumbnail, so it can be reused for the same project.
+        this._thumbnailCache = { projectId: undefined, url: null, revision: -1 };
+        this._getProjectStorage = () => {
+            if (!this.planet || !this.planet.ProjectStorage) {
+                return null;
+            }
+
+            return this.planet.ProjectStorage;
+        };
+
+        /**
+         * Hides music blocks and related elements.
+         */
+        this.hideMusicBlocks = () => {
+            this.activity.hideSearchWidget();
+            window.widgetWindows.hideAllWindows();
+
+            this.activity.logo.doStopTurtles();
+            docById("helpElem").style.visibility = "hidden";
+            document.querySelector(".canvasHolder").classList.add("hide");
+            document.querySelector("#canvas").style.display = "none";
+            document.querySelector("#theme-color").content = "#8bc34a";
+            const that = this;
+            setTimeout(() => {
+                // Time to release the mouse
+                that.activity.stage.enableDOMEvents(false);
+            }, 250);
+            window.scroll(0, 0);
+        };
+
+        /**
+         * Shows music blocks and related elements.
+         */
+        this.showMusicBlocks = () => {
+            document.title = this.activity.planet.getCurrentProjectName();
+            document.getElementById("toolbars").style.display = "block";
+            document.getElementById("palette").style.display = "block";
+
+            this.activity.prepSearchWidget();
+            window.widgetWindows.showWindows();
+
+            document.querySelector(".canvasHolder").classList.remove("hide");
+            document.querySelector("#canvas").style.display = "";
+            document.querySelector("#theme-color").content = platformColor.header;
+            this.activity.stage.enableDOMEvents(true);
+            window.scroll(0, 0);
+            const buttonContainerBottom = docById("buttoncontainerBOTTOM");
+            if (buttonContainerBottom) buttonContainerBottom.style.display = "block";
+            docById("buttoncontainerTOP").style.display = "block";
+
+            if (
+                this.activity &&
+                this.activity.gitDropdownUI &&
+                typeof this.activity.gitDropdownUI._syncMenuState === "function"
+            ) {
+                this.activity.gitDropdownUI._syncMenuState();
+            }
+
+            if (
+                this.activity &&
+                this.activity.toolbar &&
+                typeof this.activity.toolbar.syncToolbarHeight === "function"
+            ) {
+                this.activity.toolbar.syncToolbarHeight();
+            }
+        };
+
+        /**
+         * Shows the planet interface.
+         */
+        this.showPlanet = () => {
+            if (!this.planet || typeof this.planet.open !== "function") {
+                console.error("[PlanetInterface] showPlanet called before Planet is ready.");
+                return;
+            }
+
+            const png = docById("overlayCanvas").toDataURL("image/png");
+            this.planet.open(png); // this.mainCanvas.toDataURL("image/png"));
+            this.iframe.style.display = "block";
+            this.iframe.style.zIndex = "9999";
+            try {
+                this.iframe.contentWindow.document.getElementById("local-tab").click();
+            } catch (e) {
+                console.error(e);
+            }
+        };
+
+        /**
+         * Hides the planet interface.
+         */
+        this.hidePlanet = () => {
+            this.iframe.style.display = "none";
+        };
+
+        /**
+         * Opens the planet interface.
+         */
+        this.openPlanet = () => {
+            if (
+                !this.planet ||
+                !this.planet.ProjectStorage ||
+                typeof this.planet.open !== "function"
+            ) {
+                console.error("[PlanetInterface] openPlanet called before Planet is ready.");
+                return;
+            }
+
+            this.saveLocally({ forceThumbnail: true });
+            this.hideMusicBlocks();
+            this.showPlanet();
+        };
+
+        /**
+         * Closes the planet interface.
+         */
+        this.closePlanet = () => {
+            this.hidePlanet();
+            this.showMusicBlocks();
+        };
+
+        /**
+         * Loads a project from data.
+         * @param {string} data - The project data to load.
+         * @param {boolean} [merge=false] - Whether to merge with existing project data.
+         */
+        this.loadProjectFromData = (data, merge) => {
+            if (merge === undefined) {
+                merge = false;
+            }
+
+            this.closePlanet();
+            if (!merge) {
+                this.activity.sendAllToTrash(false, true);
+                this._resetTrashHistory();
+            }
+
+            if (data === undefined) {
+                this.activity.errorMsg(_("project undefined"));
+                return;
+            }
+            this.activity.textMsg(this.getCurrentProjectName());
+            this.activity.loading = true;
+            document.body.style.cursor = "wait";
+            this.activity.doLoadAnimation();
+            this.activity._allClear(false, true);
+
+            // First, hide the palettes as they will need updating.
+            this.activity.blocks.palettes._hideMenus(true);
+
+            const __afterLoad = () => {
+                pubsub.off("finishedLoading", __afterLoad);
+            };
+
+            pubsub.on("finishedLoading", __afterLoad);
+
+            try {
+                if (
+                    data === null ||
+                    data === "undefined" ||
+                    data === "null" ||
+                    data === "[]" ||
+                    (typeof data === "string" && data.trim() === "")
+                ) {
+                    this.activity.justLoadStart();
+                } else {
+                    const obj = typeof data === "string" ? JSON.parse(data) : data;
+                    if (
+                        obj === null ||
+                        obj === undefined ||
+                        (Array.isArray(obj) && obj.length === 0)
+                    ) {
+                        this.activity.justLoadStart();
+                    } else {
+                        this.activity.blocks.loadNewBlocks(obj);
+                    }
+                }
+            } catch (e) {
+                this.activity.errorMsg(e);
+            }
+
+            this.activity.loading = false;
+            document.body.style.cursor = "default";
+        };
+
+        /**
+         * Function to trigger loading a project from a file.
+         * Focuses on the file input element and clicks it to trigger file selection.
+         * Scrolls the window to the top.
+         */
+        this.loadProjectFromFile = () => {
+            document.querySelector("#myOpenFile").focus();
+            document.querySelector("#myOpenFile").click();
+            window.scroll(0, 0);
+        };
+
+        /**
+         * Function to create a new project.
+         * Closes the current project if open, initializes a new project, loads the start page, and saves the project locally.
+         */
+        this.newProject = () => {
+            this.closePlanet();
+            this.initialiseNewProject();
+            this.activity.justLoadStart();
+            this.saveLocally();
+        };
+
+        /**
+         * Initializes a new project with the provided name or a default name.
+         * Resets project state and optionally clears and refreshes the workspace.
+         * Refreshes the browser title after project initialization succeeds.
+         * @param {string} [name] - The name of the new project.
+         * @param {boolean} [clearWorkspace=true] - Whether to clear the current workspace.
+         */
+        this.initialiseNewProject = (name, clearWorkspace = true) => {
+            const projectStorage = this._getProjectStorage();
+            if (!projectStorage) return;
+
+            const initialization = projectStorage.initialiseNewProject(name);
+            if (clearWorkspace) {
+                this.activity.sendAllToTrash();
+                this.activity.refreshCanvas();
+            }
+            this._resetTrashHistory();
+            return initialization.then(projectID => {
+                document.title = this.getCurrentProjectName();
+                return projectID;
+            });
+        };
+
+        /**
+         * Forgets the trash and undo history of the project being replaced, so
+         * it cannot be restored into the next one or grow across project switches.
+         */
+        this._resetTrashHistory = () => {
+            this.activity.blocks.trashStacks = [];
+            this.activity.blocks.actionHistory = [];
+            this.activity.blocks.redoActionHistory = [];
+        };
+
+        /**
+         * Function to save the current project locally.
+         * Prepares project data for export, generates SVG data, and saves the project data locally.
+         * @param {Object} [options] - Save behavior options.
+         * @param {boolean} [options.rejectOnProjectSaveError=false] - Reject when project data cannot be saved.
+         * @param {boolean} [options.forceThumbnail=false] - Rebuild the thumbnail even if it is still fresh.
+         * @returns {Promise|boolean} False if project data could not be saved.
+         */
+        this.saveLocally = (options = {}) => {
+            const rejectOnProjectSaveError = options.rejectOnProjectSaveError === true;
+            const forceThumbnail = options.forceThumbnail === true;
+            if (!this.planet || !this.planet.ProjectStorage) {
+                const error = new Error(
+                    "[PlanetInterface] saveLocally called before Planet storage is ready."
+                );
+                console.error(error.message);
+                return rejectOnProjectSaveError ? Promise.reject(error) : Promise.resolve(null);
+            }
+
+            // Do not save workspace state to Planet storage while Planet is open,
+            // because the user may be switching or deleting projects in Planet,
+            // and the hidden workspace still contains the previous project's blocks.
+            if (this.iframe && this.iframe.style.display === "block") {
+                return Promise.resolve(null);
+            }
+
+            // The project being loaded is already the current one, so saving
+            // now would overwrite its stored copy with the blocks loaded so
+            // far. Its stored copy is still complete, so save once it is done.
+            if (this.activity.blocks.isLoading()) {
+                this.activity.blocks.runAfterLoad(this.saveLocally);
+                return Promise.resolve(null);
+            }
+
+            this.activity.stage.update();
+            const data = this.activity.prepareExport();
+            const projectStorage = this.planet.ProjectStorage;
+            const currentProjectId =
+                typeof projectStorage.getCurrentProjectID === "function"
+                    ? projectStorage.getCurrentProjectID()
+                    : undefined;
+            const artworkRevision = this.activity.artworkRevision;
+            const cachedThumbnail = this._thumbnailCache;
+            const reuseThumbnail =
+                !forceThumbnail &&
+                currentProjectId !== undefined &&
+                cachedThumbnail.projectId === currentProjectId &&
+                cachedThumbnail.url !== null &&
+                cachedThumbnail.revision === artworkRevision;
+            const svgData = reuseThumbnail
+                ? null
+                : doSVG(
+                      this.activity.canvas,
+                      this.activity.logo,
+                      this.activity.turtles,
+                      320,
+                      240,
+                      320 / this.activity.canvas.width
+                  );
+            const isQuotaError = e =>
+                e?.name === "QuotaExceededError" ||
+                e?.code === DOMException.QUOTA_EXCEEDED_ERR ||
+                e?.message === "Not enough space to save locally";
+            const reportSaveError = e => {
+                if (isQuotaError(e)) {
+                    this.activity.textMsg(
+                        _(
+                            "Error: Unable to save because you ran out of local storage. Try deleting some saved projects."
+                        )
+                    );
+                } else {
+                    console.error(e);
+                    this.activity.textMsg(_("Could not save your project."));
+                }
+                return false;
+            };
+            const handleProjectSaveError = e => {
+                const result = reportSaveError(e);
+                if (rejectOnProjectSaveError) throw e;
+                return result;
+            };
+            try {
+                let projectId =
+                    typeof projectStorage.getCurrentProjectID === "function"
+                        ? projectStorage.getCurrentProjectID()
+                        : undefined;
+                const saveProject = image => {
+                    if (projectId !== undefined) {
+                        return projectStorage.saveLocally(data, image, projectId);
+                    }
+                    const result = projectStorage.saveLocally(data, image);
+                    if (typeof projectStorage.getCurrentProjectID === "function") {
+                        projectId = projectStorage.getCurrentProjectID();
+                    }
+                    if (result && typeof result.then === "function") {
+                        return result.then(res => {
+                            if (
+                                projectId === undefined &&
+                                typeof projectStorage.getCurrentProjectID === "function"
+                            ) {
+                                projectId = projectStorage.getCurrentProjectID();
+                            }
+                            return res;
+                        });
+                    }
+                    return result;
+                };
+                const saveThumbnail = image => {
+                    if (this.iframe && this.iframe.style.display === "block") {
+                        if (
+                            projectId === undefined ||
+                            projectStorage.data?.Projects?.[projectId] === undefined
+                        ) {
+                            return Promise.resolve(null);
+                        }
+                    }
+                    if (
+                        projectId === undefined &&
+                        typeof projectStorage.getCurrentProjectID === "function"
+                    ) {
+                        projectId = projectStorage.getCurrentProjectID();
+                    }
+                    if (typeof projectStorage.saveThumbnail === "function") {
+                        if (projectId === undefined) {
+                            return Promise.resolve(null);
+                        }
+                        return projectStorage.saveThumbnail(image, projectId);
+                    }
+                    if (projectId !== undefined) {
+                        return projectStorage.saveLocally(data, image, projectId);
+                    }
+                    return projectStorage.saveLocally(data, image);
+                };
+                if (reuseThumbnail) {
+                    return Promise.resolve(saveProject(cachedThumbnail.url)).catch(
+                        handleProjectSaveError
+                    );
+                } else if (svgData === null || svgData === undefined || svgData === "") {
+                    // No image to save, so drop any cached thumbnail to avoid
+                    // reusing a stale URL on a subsequent save.
+                    this._thumbnailCache = { projectId: undefined, url: null, revision: -1 };
+                    return Promise.resolve(saveProject(null)).catch(handleProjectSaveError);
+                } else {
+                    const fallbackImage =
+                        typeof projectStorage.getCurrentProjectImage === "function"
+                            ? projectStorage.getCurrentProjectImage()
+                            : null;
+                    const savePromise = Promise.resolve(saveProject(fallbackImage)).catch(
+                        handleProjectSaveError
+                    );
+                    const img = new Image();
+                    img.onload = () => {
+                        try {
+                            const bitmap = new createjs.Bitmap(img);
+                            const bounds = bitmap.getBounds();
+                            bitmap.cache(bounds.x, bounds.y, bounds.width, bounds.height);
+                            const thumbUrl = bitmap.bitmapCache.getCacheDataURL();
+                            if (projectId !== undefined) {
+                                this._thumbnailCache = {
+                                    projectId: projectId,
+                                    url: thumbUrl,
+                                    revision: artworkRevision
+                                };
+                            }
+                            const commitThumbnail = () => {
+                                if (
+                                    projectId === undefined &&
+                                    typeof projectStorage.getCurrentProjectID === "function"
+                                ) {
+                                    projectId = projectStorage.getCurrentProjectID();
+                                }
+                                return saveThumbnail(thumbUrl);
+                            };
+                            if (projectId !== undefined) {
+                                Promise.resolve(commitThumbnail()).catch(reportSaveError);
+                            } else {
+                                Promise.resolve(savePromise)
+                                    .then(commitThumbnail)
+                                    .catch(reportSaveError);
+                            }
+                        } catch (error) {
+                            console.error(error);
+                        }
+                    };
+                    img.src = "data:image/svg+xml;base64," + window.btoa(base64Encode(svgData));
+                    return savePromise;
+                }
+            } catch (e) {
+                if (isQuotaError(e)) {
+                    const result = reportSaveError(e);
+                    if (rejectOnProjectSaveError) throw e;
+                    return result;
+                } else {
+                    console.error(e);
+                    throw e;
+                }
+            }
+        };
+
+        /**
+         * Function to asynchronously open the current project.
+         * @returns {Promise} - A promise that resolves with the current project data.
+         */
+        this.openCurrentProject = async () => {
+            const projectStorage = this._getProjectStorage();
+            if (!projectStorage || typeof projectStorage.getCurrentProjectData !== "function") {
+                console.error(
+                    "[PlanetInterface] openCurrentProject called before Planet storage is ready."
+                );
+                return null;
+            }
+
+            return await projectStorage.getCurrentProjectData();
+        };
+
+        /**
+         * Opens a project from the Planet by its ID.
+         * @param {string} id - The ID of the project to open.
+         * @param {string} [error] - Error message if project opening fails.
+         */
+        this.openProjectFromPlanet = (id, error) => {
+            if (!this.planet || typeof this.planet.openProjectFromPlanet !== "function") {
+                console.error(
+                    "[PlanetInterface] openProjectFromPlanet called before Planet is ready."
+                );
+                return;
+            }
+
+            this.planet.openProjectFromPlanet(id, error);
+        };
+
+        /**
+         * Function to execute when the converter is loaded.
+         * Sets the Converter object in the window context.
+         */
+        this.onConverterLoad = () => {
+            window.Converter = this.planet.Converter;
+        };
+
+        /**
+         * Retrieves the name of the current project.
+         * @returns {string} - The name of the current project.
+         */
+        this.getCurrentProjectName = () => {
+            const projectStorage = this._getProjectStorage();
+            if (!projectStorage || typeof projectStorage.getCurrentProjectName !== "function") {
+                return "";
+            }
+
+            return projectStorage.getCurrentProjectName();
+        };
+
+        /**
+         * Retrieves the id of the current project. It changes whenever a new
+         * project is started or another one is opened.
+         * @returns {string|undefined} - The id, or undefined before Planet loads.
+         */
+        this.getCurrentProjectID = () => {
+            const projectStorage = this._getProjectStorage();
+            if (!projectStorage || typeof projectStorage.getCurrentProjectID !== "function") {
+                return undefined;
+            }
+
+            return projectStorage.getCurrentProjectID();
+        };
+
+        /**
+         * Retrieves the GitHub repo linked to the current project.
+         * @returns {Object|null} - The project ID, repo name, key and project name, or null
+         * when Planet storage is not ready.
+         */
+        this.getCurrentGitRepoData = () => {
+            const projectStorage = this._getProjectStorage();
+            if (!projectStorage || !projectStorage.data || !projectStorage.data.Projects) {
+                return null;
+            }
+
+            const projectId = projectStorage.getCurrentProjectID();
+            const project = projectStorage.data.Projects[projectId];
+            const gitData = project && project.GitRepoData;
+            const repoName = (gitData && gitData.repoName) || "";
+            return {
+                projectId,
+                repoName,
+                hashedKey: repoName
+                    ? gitData.hashedKey || localStorage.getItem("mb_git_key_" + repoName) || ""
+                    : "",
+                displayName: project ? project.ProjectName : ""
+            };
+        };
+
+        /**
+         * Retrieves the description of the current project.
+         * @returns {string} - The description of the current project.
+         */
+        this.getCurrentProjectDescription = () => {
+            const projectStorage = this._getProjectStorage();
+            if (
+                !projectStorage ||
+                typeof projectStorage.getCurrentProjectDescription !== "function"
+            ) {
+                return "";
+            }
+
+            return projectStorage.getCurrentProjectDescription();
+        };
+
+        /**
+         * Retrieves the image associated with the current project.
+         * @returns {string} - The URL of the image associated with the current project.
+         */
+        this.getCurrentProjectImage = () => {
+            const projectStorage = this._getProjectStorage();
+            if (!projectStorage || typeof projectStorage.getCurrentProjectImage !== "function") {
+                return null;
+            }
+
+            return projectStorage.getCurrentProjectImage();
+        };
+
+        /**
+         * Retrieves the timestamp of the last time the project was saved.
+         * @returns {Date} - The timestamp of the last save operation.
+         */
+        this.getTimeLastSaved = () => {
+            const projectStorage = this._getProjectStorage();
+            if (!projectStorage) {
+                return null;
+            }
+
+            return projectStorage.TimeLastSaved ?? null;
+        };
+
+        /**
+         * Initializes the Planet iframe and sets up communication between the main window and the iframe.
+         * Sets up event handlers and initializes Converter.
+         */
+        this.init = async () => {
+            this.iframe = document.getElementById("planet-iframe");
+            this.planet = null;
+            window.Converter = undefined;
+            await this.iframe.contentWindow.makePlanet(
+                _THIS_IS_MUSIC_BLOCKS_,
+                this.activity.storage,
+                window._
+            );
+            this.planet = this.iframe.contentWindow.p;
+            this.planet.setLoadProjectFromData(this.loadProjectFromData.bind(this));
+            this.planet.setPlanetClose(this.closePlanet.bind(this));
+            this.planet.setLoadNewProject(this.newProject.bind(this));
+            this.planet.setLoadProjectFromFile(this.loadProjectFromFile.bind(this));
+            this.planet.setOnConverterLoad(this.onConverterLoad.bind(this));
+
+            window.Converter = this.planet ? this.planet.Converter : undefined;
+            this.mainCanvas = this.activity.canvas;
+
+            // Push theme colors and block display-name map to the iframe
+            // via postMessage so it never needs window.parent access.
+            this._pushPlatformColor();
+            this._pushBlockDisplayNames();
+        };
+
+        /**
+         * Sends platformColor to the Planet iframe via postMessage.
+         */
+        this._pushPlatformColor = () => {
+            if (!this.iframe || !this.iframe.contentWindow) return;
+            try {
+                this.iframe.contentWindow.postMessage(
+                    {
+                        type: "MB_PLATFORM_COLOR",
+                        payload: typeof platformColor !== "undefined" ? platformColor : null
+                    },
+                    "*"
+                );
+            } catch (e) {
+                console.debug("Could not push platformColor to Planet iframe:", e);
+            }
+        };
+
+        /**
+         * Builds a proto-name → display-name map from the palettes and
+         * sends it to the Planet iframe so Publisher.parseProject() can
+         * resolve human-friendly names without reaching into the parent.
+         */
+        this._pushBlockDisplayNames = () => {
+            if (!this.iframe || !this.iframe.contentWindow) return;
+            try {
+                const palettes = this.activity.blocks.palettes;
+                const nameMap = {};
+                for (const palette of Object.keys(palettes.dict)) {
+                    for (const blk of Object.keys(palettes.dict[palette].protoList)) {
+                        const proto = palettes.dict[palette].protoList[blk];
+                        if (proto.name && proto.staticLabels && proto.staticLabels[0]) {
+                            nameMap[proto.name] = proto.staticLabels[0];
+                        }
+                    }
+                }
+                this.iframe.contentWindow.postMessage(
+                    { type: "MB_BLOCK_NAMES", payload: nameMap },
+                    "*"
+                );
+            } catch (e) {
+                console.debug("Could not push block names to Planet iframe:", e);
+            }
+        };
+    }
+}
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = PlanetInterface;
+}

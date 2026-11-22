@@ -1,0 +1,476 @@
+#floatingWindows {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+#floatingWindows * {
+  box-sizing: border-box;
+}
+
+#floatingWindows > .windowFrame {
+  overflow: hidden;
+  border-radius: 8px;
+  border: 2px solid var(--color-widget-frame-border);
+  background-color: var(--color-widget-frame-bg);
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+#floatingWindows > .windowFrame > .wfTopBar {
+  height: 29px;
+  border-bottom: 1px solid var(--color-widget-frame-border);
+  min-width: 425px;
+  display: flex;
+  padding: 4px;
+  position: relative;
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton {
+  background-color: var(--color-widget-frame-border);
+  border-radius: 2px;
+  width: 21px;
+  height: 21px;
+  margin-left: 4px;
+  margin-right: 4px;
+  border: none;
+  flex-shrink: 0;
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.close:hover {
+  background-color: var(--color-error);
+  opacity: 0.7;
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup:hover {
+  background-color: var(--color-success);
+  opacity: 0.7;
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton:last-child {
+  margin: 0;
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup {
+  order: 2;
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup::before,
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup::after {
+  content: "";
+  display: block;
+  height: 2px;
+  width: 60%;
+  left: 50%;
+  top: 50%;
+  position: absolute;
+  background-color: var(--color-text-inverse);
+  transform: translate(-50%, -50%);
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup.plus::before {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup::before {
+  transform: translate(-50%, -50%) rotate(0deg);
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.close::before,
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.close::after {
+  content: "";
+  display: block;
+  height: 2px;
+  width: 70%;
+  left: 50%;
+  top: 50%;
+  position: absolute;
+  background-color: var(--color-text-inverse);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftButton.close::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+#floatingWindows > .windowFrame > .wfTopBar .wftTitle {
+  line-height: 21px;
+  flex-grow: 1;
+  color: var(--color-text-secondary);
+  user-select: none;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+}
+
+#floatingWindows > .windowFrame > .wfWinBody {
+  min-height: 50px;
+  min-width: 50px;
+  display: flex;
+}
+
+#floatingWindows > .windowFrame > .wfWinBody > .wfbToolbar {
+  flex-shrink: 0;
+}
+
+#floatingWindows > .windowFrame > .wfWinBody > .wfbToolbar > .wfbtHR {
+  width: 40px;
+  height: 2px;
+  margin: -2px 7px;
+  background-color: var(--color-widget-frame-border);
+}
+
+.wfbtItem {
+  width: 50px;
+  height: 50px;
+  margin: 2px;
+  transition: background-color 300ms;
+  background-color: var(--color-selector-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.wfbtItem:hover {
+  background-color: var(--color-selector-selected);
+}
+
+.wfbtItem:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+.wfbtItem > input {
+  border: none;
+  width: 100%;
+  height: 100%;
+  font-size: 24px;
+  font-weight: bold;
+  background: transparent;
+  text-align: center;
+  color: var(--color-selector-text);
+}
+
+#floatingWindows > .windowFrame > .wfWinBody > .wfbWidget {
+  flex-grow: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+#floatingWindows td {
+  padding: 0;
+}
+
+#floatingWindows table {
+  border-collapse: collapse;
+}
+
+#floatingWindows table .wfbtItem {
+  margin: 1px 0;
+}
+
+@media (max-width: 600px) {
+  .wheelNav {
+    z-index: 2000;
+  }
+
+  #floatingWindows {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 10000;
+  }
+
+  #floatingWindows > .windowFrame {
+    border-radius: 0;
+    border: none;
+    width: 100vw;
+    height: 100vh;
+    left: 0 !important;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar {
+    height: 56px;
+    background-color: var(--color-widget-titlebar-bg);
+    border: none;
+    padding: 0;
+    align-items: center;
+    flex-shrink: 0;
+    box-shadow: 0px 2px 5px 0px rgba(0, 0, 0, 0.16), 0px 2px 10px 0px rgba(0, 0, 0, 0.12);
+    min-width: auto;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton {
+    padding: 0 15px;
+    background: none;
+    border-radius: 0;
+    transition: background-color 300ms;
+    height: 100%;
+    width: 56px;
+    margin: 0;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton.wftMaxmin {
+    display: none;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup {
+    display: none;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton:hover {
+    opacity: 1;
+    background-color: rgba(0, 0, 0, 0.1);
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton.rollup::before {
+    width: 40%;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton.close::before,
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton.close::after {
+    width: 50%;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftTitle {
+    flex-grow: 1;
+    color: var(--color-widget-titlebar-text);
+    font-size: 1.5em;
+    padding: 0 15px;
+    text-align: center;
+    text-transform: uppercase;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+  }
+
+  /* The dark-theme rule in themes.css (`.dark ... .wftTitle`) has higher
+     specificity than the plain rule above and would otherwise override
+     it with --color-text-secondary (#d1d5db), which fails contrast
+     against this breakpoint's blue title bar background. Using an
+     extra element selector (body) keeps identical id/class specificity
+     to that rule while adding one more selector segment, so this wins
+     the cascade regardless of stylesheet load order. */
+  body.dark #floatingWindows > .windowFrame > .wfTopBar .wftTitle {
+    color: var(--color-widget-titlebar-text);
+  }
+
+  #floatingWindows > .windowFrame > .wfWinBody {
+    flex-direction: column;
+    flex-grow: 1;
+  }
+
+  #floatingWindows > .windowFrame > .wfWinBody > .wfbToolbar {
+    width: 54px;
+    flex-shrink: 0;
+    display: flex;
+    overflow-y: auto;
+    background-color: rgba(0, 0, 0, 0.1);
+    width: 100%;
+    padding: 2px 4px;
+  }
+
+  #floatingWindows > .windowFrame > .wfWinBody > .wfbToolbar > * {
+    flex-shrink: 0;
+  }
+
+  #floatingWindows > .windowFrame > .wfWinBody > .wfbWidget {
+    padding: 10px;
+  }
+}
+
+@media (max-width: 450px) {
+  .wheelNav {
+    z-index: 2000;
+  }
+
+  #floatingWindows {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 10000;
+  }
+
+  #floatingWindows > .windowFrame {
+    border-radius: 0;
+    border: none;
+    width: 100vw;
+    height: 100vh;
+    left: 0 !important;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar {
+    height: 56px;
+    background-color: var(--color-widget-titlebar-bg);
+    border: none;
+    padding: 0;
+    align-items: center;
+    flex-shrink: 0;
+    box-shadow: 0px 2px 5px 0px rgba(0, 0, 0, 0.16), 0px 2px 10px 0px rgba(0, 0, 0, 0.12);
+    min-width: auto;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton {
+    padding: 0 10px;
+    background: none;
+    border-radius: 0;
+    transition: background-color 300ms;
+    height: 100%;
+    width: 56px;
+    margin: 0;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton:hover {
+    opacity: 1;
+    background-color: rgba(0, 0, 0, 0.1);
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftTitle {
+    flex-grow: 1;
+    color: var(--color-widget-titlebar-text);
+    font-size: 1.2em;
+    padding: 0 10px;
+    text-align: center;
+    text-transform: uppercase;
+    font-weight: 500;
+    letter-spacing: 1px;
+  }
+
+  /* See the 600px breakpoint above for why this override is needed. */
+  body.dark #floatingWindows > .windowFrame > .wfTopBar .wftTitle {
+    color: var(--color-widget-titlebar-text);
+  }
+
+  #floatingWindows > .windowFrame > .wfWinBody > .wfbToolbar {
+    width: 50px;
+    flex-shrink: 0;
+    display: flex;
+    overflow-y: auto;
+    background-color: rgba(0, 0, 0, 0.1);
+    width: 100%;
+    padding: 2px 4px;
+  }
+
+  #floatingWindows > .windowFrame > .wfWinBody > .wfbWidget {
+    padding: 5px;
+  }
+}
+
+@media (max-width: 320px) {
+  .wheelNav {
+    z-index: 2000;
+  }
+
+  #floatingWindows {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 10000;
+  }
+
+  #floatingWindows > .windowFrame {
+    border-radius: 0;
+    border: none;
+    width: 100vw;
+    height: 100vh;
+    left: 0;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar {
+    height: 48px;
+    background-color: var(--color-widget-titlebar-bg);
+    border: none;
+    padding: 0;
+    align-items: center;
+    flex-shrink: 0;
+    box-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.16), 0px 1px 7px 0px rgba(0, 0, 0, 0.12);
+    min-width: auto;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton {
+    padding: 0 8px;
+    background: none;
+    border-radius: 0;
+    transition: background-color 300ms;
+    height: 100%;
+    width: 48px;
+    margin: 0;
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftButton:hover {
+    opacity: 1;
+    background-color: rgba(0, 0, 0, 0.1);
+  }
+
+  #floatingWindows > .windowFrame > .wfTopBar .wftTitle {
+    flex-grow: 1;
+    color: var(--color-widget-titlebar-text);
+    font-size: 1.1em;
+    padding: 0 8px;
+    text-align: center;
+    text-transform: uppercase;
+    font-weight: 100;
+    letter-spacing: 1px;
+  }
+
+  /* See the 600px breakpoint above for why this override is needed. */
+  body.dark #floatingWindows > .windowFrame > .wfTopBar .wftTitle {
+    color: var(--color-widget-titlebar-text);
+  }
+
+  #floatingWindows > .windowFrame > .wfWinBody > .wfbToolbar {
+    width: 44px;
+    flex-shrink: 0;
+    display: flex;
+    overflow-y: auto;
+    background-color: rgba(0, 0, 0, 0.1);
+    width: 100%;
+    padding: 1px 3px;
+  }
+}
+
+/* Temperament widget tokens */
+.temperament-selector-cell {
+  background-color: var(--color-selector-bg);
+}
+
+.temperament-selector-cell:hover,
+.temperament-selector-hover {
+  background-color: var(--color-selector-selected);
+}
+
+/* Arpeggio widget tokens */
+.arpeggio-label-cell {
+  background-color: var(--color-label-bg);
+}
+
+.arpeggio-selector-cell {
+  background-color: var(--color-selector-bg);
+}
+
+.arpeggio-selector-cell.selected,
+.arpeggio-selector-selected {
+  background-color: var(--color-selector-selected);
+}
+
+/* Status Matrix widget tokens */
+.status-matrix-cell {
+  background-color: var(--color-selector-bg);
+}
+
+

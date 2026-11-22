@@ -1,0 +1,818 @@
+// Copyright (c) 2015-2024 Yash Khandelwal
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/* global requirejs, define */
+
+// Localization helper for early bootstrap
+const t_ = typeof _ === "function" ? _ : s => s;
+
+const ASSET_VERSION = window.location.protocol === "file:" ? "" : "v=999999_fix8";
+
+// The function normalizeLanguageCode() is declared as a side effect of
+// loading js/utils/language-utils.js as a <script> tag in index.html; classic
+// (non-module) scripts share one global lexical scope, so it is already
+// visible here without a local declaration of the same name -- redeclaring it
+// with let/const throws "already been declared". Under Jest, loader.js is
+// required directly via CommonJS and no such tag runs, so fall back to
+// requiring the module the same way js/utils/utils.js does. Guard on `module`
+// rather than `require` alone: RequireJS (lib/require.js) also exposes a
+// global `require` in the browser, and calling that synchronously on an
+// unregistered module id throws.
+let resolvedNormalizeLanguageCode =
+    typeof normalizeLanguageCode === "function" ? normalizeLanguageCode : undefined;
+if (!resolvedNormalizeLanguageCode && typeof module !== "undefined" && module.exports) {
+    ({ normalizeLanguageCode: resolvedNormalizeLanguageCode } = require("./utils/language-utils"));
+}
+
+requirejs.config({
+    baseUrl: "./",
+    urlArgs: ASSET_VERSION,
+    // Keep the bootstrap alive while modules download or evaluate on slow
+    // connections. The loading splash remains visible until initialization completes.
+    waitSeconds: 0,
+    shim: {
+        // raphael is AMD -- it checks define.amd -- so it is deliberately not
+        // shimmed; RequireJS loads it as a module. wheelnav is a plain global
+        // that reaches for Raphael, so it is shimmed onto it.
+        "wheelnav": {
+            deps: ["raphael"],
+            exports: "wheelnav"
+        },
+        "easeljs.min": {
+            exports: "createjs"
+        },
+        "tweenjs.min": {
+            deps: ["easeljs.min"],
+            exports: "createjs"
+        },
+        "Tone": {
+            exports: "Tone"
+        },
+        "howler": {
+            exports: "Howl"
+        },
+        "Chart": {
+            exports: "Chart"
+        },
+        "i18nextHttpBackend": {
+            exports: "i18nextHttpBackend"
+        },
+        "p5.min": {
+            exports: "p5"
+        },
+        "p5-adapter": {
+            deps: ["p5.min"]
+        },
+        "p5.sound.min": {
+            deps: ["p5-adapter"]
+        },
+        "p5.dom.min": {
+            deps: ["p5.min"]
+        },
+        "p5-sound-adapter": {
+            deps: ["p5.sound.min"]
+        },
+        "utils/platformstyle": {
+            deps: ["utils/utils-logic"],
+            exports: "platformThemes"
+        },
+        "utils/plugin-utils": {
+            exports: "PluginUtils"
+        },
+        "utils/macro-utils": {
+            exports: "MacroUtils"
+        },
+        "utils/utils-logic": {
+            exports: "UtilsLogic"
+        },
+        "utils/dom-helpers": {
+            exports: "DomHelpers"
+        },
+        "utils/browser-utils": {
+            exports: "BrowserUtils"
+        },
+        "utils/http-utils": {
+            exports: "HttpUtils"
+        },
+        "utils/utils": {
+            deps: [
+                "utils/platformstyle",
+                "utils/utils-logic",
+                "utils/dom-helpers",
+                "utils/browser-utils",
+                "utils/http-utils",
+                "utils/plugin-utils",
+                "utils/macro-utils"
+            ],
+            exports: "_"
+        },
+        "utils/camera-utils": {
+            exports: "CameraUtils"
+        },
+        "utils/retryWithBackoff": {
+            deps: ["utils/utils"],
+            exports: "retryWithBackoff"
+        },
+        "utils/error-handler": {
+            exports: "ErrorHandler"
+        },
+        "activity/turtledefs": {
+            deps: ["utils/utils"],
+            exports: "createDefaultStack"
+        },
+        "activity/block": {
+            deps: ["activity/turtledefs", "utils/retryWithBackoff"],
+            exports: "Block"
+        },
+        "activity/connection-validator": {
+            exports: "ConnectionValidator"
+        },
+        "activity/block-drag-controller": {
+            deps: ["activity/block-constants"],
+            exports: "setupBlockDragController"
+        },
+        "activity/blocks": {
+            deps: [
+                "activity/block",
+                "activity/pubsub",
+                "activity/block-constants",
+                "activity/connection-validator",
+                "activity/block-drag-controller"
+            ],
+            exports: "Blocks"
+        },
+        "activity/turtle-singer": {
+            exports: "Singer"
+        },
+        "activity/turtle-painter": {
+            exports: "Painter"
+        },
+        "activity/turtle": {
+            deps: [
+                "activity/turtledefs",
+                "activity/turtle-singer",
+                "activity/turtle-painter",
+                "utils/retryWithBackoff"
+            ],
+            exports: "Turtle"
+        },
+        "activity/turtles": {
+            deps: ["activity/turtle"],
+            exports: "Turtles"
+        },
+        "activity/notation": {
+            exports: "Notation"
+        },
+        "utils/musicutils-constants": {
+            exports: "MusicUtilsConstants"
+        },
+        "utils/musicutils-i18n": {
+            deps: ["utils/utils", "utils/musicutils-constants"],
+            exports: "MusicUtilsI18n"
+        },
+        "utils/musicutils-temperament": {
+            deps: ["utils/utils", "utils/musicutils-constants", "utils/musicutils-i18n"],
+            exports: "MusicUtilsTemperament"
+        },
+        "utils/musicutils-pitch": {
+            deps: [
+                "utils/utils",
+                "utils/musicutils-constants",
+                "utils/musicutils-i18n",
+                "utils/musicutils-temperament"
+            ],
+            exports: "MusicUtilsPitch"
+        },
+        "utils/musicutils-lookups": {
+            deps: ["utils/utils", "utils/musicutils-constants", "utils/musicutils-i18n"],
+            exports: "MusicUtilsLookups"
+        },
+        "utils/musicutils-rhythm": {
+            deps: ["utils/utils", "utils/musicutils-constants"],
+            exports: "MusicUtilsRhythm"
+        },
+        "utils/musicutils-solfege": {
+            deps: ["utils/utils", "utils/musicutils-constants", "utils/musicutils-i18n"],
+            exports: "MusicUtilsSolfege"
+        },
+        "utils/piemenu": {
+            exports: "PieMenuUtils"
+        },
+        "utils/musicutils-modewheel": {
+            deps: ["utils/utils", "utils/musicutils-constants", "utils/musicutils-temperament"],
+            exports: "MusicUtilsModeWheel"
+        },
+        "utils/musicutils-modecore": {
+            deps: [
+                "utils/utils",
+                "utils/musicutils-constants",
+                "utils/musicutils-temperament",
+                "utils/musicutils-pitch"
+            ],
+            exports: "MusicUtilsModeCore"
+        },
+        "utils/musicutils-pitchscale": {
+            deps: [
+                "utils/utils",
+                "utils/musicutils-constants",
+                "utils/musicutils-i18n",
+                "utils/musicutils-temperament",
+                "utils/musicutils-pitch",
+                "utils/musicutils-solfege",
+                "utils/musicutils-modecore"
+            ],
+            exports: "MusicUtilsPitchScale"
+        },
+        "utils/musicutils-buildscale": {
+            deps: [
+                "utils/utils",
+                "utils/musicutils-constants",
+                "utils/musicutils-i18n",
+                "utils/musicutils-temperament",
+                "utils/musicutils-pitch",
+                "utils/musicutils-pitchscale",
+                "utils/musicutils-solfege",
+                "utils/musicutils-modecore"
+            ],
+            exports: "MusicUtilsBuildScale"
+        },
+        "utils/musicutils-pitchinfo": {
+            deps: [
+                "utils/utils",
+                "utils/musicutils-constants",
+                "utils/musicutils-i18n",
+                "utils/musicutils-temperament",
+                "utils/musicutils-pitch",
+                "utils/musicutils-pitchscale",
+                "utils/musicutils-buildscale"
+            ],
+            exports: "MusicUtilsPitchInfo"
+        },
+        "utils/musicutils": {
+            deps: [
+                "utils/utils",
+                "utils/musicutils-constants",
+                "utils/musicutils-i18n",
+                "utils/musicutils-temperament",
+                "utils/musicutils-pitch",
+                "utils/musicutils-lookups",
+                "utils/musicutils-rhythm",
+                "utils/musicutils-solfege",
+                "utils/musicutils-modewheel",
+                "utils/musicutils-modecore",
+                "utils/musicutils-pitchscale",
+                "utils/musicutils-buildscale",
+                "utils/musicutils-pitchinfo"
+            ]
+        },
+        "utils/synthutils": {
+            deps: ["utils/utils", "activity/activity-context"],
+            exports: "Synth"
+        },
+        "utils/ManagedTimer": {
+            exports: "ManagedTimer"
+        },
+        "activity/embedded-graphics-scheduler": {
+            exports: "EmbeddedGraphicsScheduler"
+        },
+        "activity/kokoro-speech": {
+            exports: "KokoroSpeech"
+        },
+        "activity/LogoDependencies": {
+            exports: "LogoDependencies"
+        },
+        "activity/logo": {
+            deps: [
+                "activity/turtles",
+                "activity/notation",
+                "utils/synthutils",
+                "activity/logoconstants",
+                "utils/ManagedTimer",
+                "activity/embedded-graphics-scheduler",
+                "activity/kokoro-speech",
+                "activity/LogoDependencies"
+            ],
+            exports: "Logo"
+        },
+        "activity/activity": {
+            deps: [
+                "utils/utils",
+                "utils/error-handler",
+                "activity/activity-context",
+                "activity/logo",
+                "activity/blocks",
+                "activity/turtles",
+                "activity/recorder",
+                "activity/abc-parser",
+                "activity/mxml-parser",
+                "activity/idle-watcher",
+                "activity/grid-controller",
+                "activity/grid-renderer",
+                "activity/plugin-controller",
+                "widgets/plugin-dialog",
+                "activity/toolbar-controller",
+                "activity/focus-cycle-manager",
+                "activity/toolbar-ui",
+                "activity/alert-controller",
+                "activity/alert-renderer",
+                "palette/palette-loader",
+                "activity/search-controller",
+                "activity/clear-confirmation",
+                "activity/workspace-layout-controller",
+                "activity/block-scale-controller",
+                "search-ui",
+                "project-manager",
+                "activity/keyboard-controller",
+                "activity/selection-controller",
+                "activity/trash-controller",
+                "activity/help-controller",
+                "activity/context-menu-controller"
+            ],
+            exports: "Activity"
+        },
+        "materialize": {
+            deps: ["jquery"],
+            exports: "M"
+        },
+        "jquery-ui": {
+            deps: ["jquery"]
+        },
+        "libgif": {
+            exports: "SuperGif"
+        },
+        "highlight": {
+            exports: "hljs"
+        },
+        "activity/logoconstants": {
+            deps: ["utils/utils"]
+        },
+        "activity/js-export/constraints": {
+            deps: ["activity/js-export/interface"]
+        },
+        "activity/js-export/generate": {
+            deps: ["activity/js-export/ASTutils"]
+        },
+        "activity/js-export/ast2blocks.config": {
+            exports: "ast2blocklist_config"
+        },
+        "activity/toolbar-ui": {
+            deps: ["utils/utils", "utils/dom-helpers", "activity/focus-cycle-manager"],
+            exports: "ToolbarUI"
+        },
+        "widgets/widgetWindows": {
+            deps: ["utils/utils", "utils/dom-helpers"],
+            exports: "widgetWindows"
+        },
+        "widgets/help": {
+            deps: ["utils/utils", "utils/dom-helpers", "widgets/widgetWindows"],
+            exports: "HelpWidget"
+        },
+        // The chat widgets read createWidgetLifecycle off window, so the helper
+        // must be evaluated before they are. These are plain scripts, which
+        // RequireJS would otherwise fetch and evaluate in any order.
+        "utils/ai-widget-lifecycle": {
+            exports: "createWidgetLifecycle"
+        },
+        "utils/ai-markdown": {
+            exports: "renderChatMarkdown"
+        },
+        "utils/tuningformats": {
+            exports: "TuningFormats"
+        },
+        "widgets/reflection": {
+            deps: ["utils/ai-widget-lifecycle", "utils/ai-markdown"]
+        },
+        "widgets/aidebugger": {
+            deps: ["utils/ai-widget-lifecycle", "utils/ai-markdown"]
+        }
+    },
+    paths: {
+        "utils": "js/utils",
+        "widgets": "js/widgets",
+        "activity": "js",
+        "activity/recorder": "js/activity/recorder",
+        "activity/exporters": "js/activity/exporters",
+        "activity/abc-parser": "js/activity/abc-parser",
+        "activity/mxml-parser": "js/activity/mxml-parser",
+        "activity/idle-watcher": "js/activity/idle-watcher",
+        "activity/grid-controller": "js/activity/grid-controller",
+        "activity/grid-renderer": "js/activity/grid-renderer",
+        "activity/plugin-controller": "js/activity/plugin-controller",
+        "activity/toolbar-controller": "js/activity/toolbar-controller",
+        "activity/alert-controller": "js/activity/alert-controller",
+        "activity/alert-renderer": "js/activity/alert-renderer",
+        "palette/palette-loader": "js/palette/palette-loader",
+        "activity/search-controller": "js/activity/search-controller",
+        "activity/clear-confirmation": "js/activity/clear-confirmation",
+        "activity/workspace-layout-controller": "js/activity/workspace-layout-controller",
+        "activity/selection-controller": "js/activity/selection-controller",
+        "activity/block-scale-controller": "js/activity/block-scale-controller",
+        "activity/block-drag-controller": "js/activity/block-drag-controller",
+        "activity/trash-controller": "js/activity/trash-controller",
+        "activity/help-controller": "js/activity/help-controller",
+        "activity/context-menu-controller": "js/activity/context-menu-controller",
+        "search-ui": "js/search-ui",
+        "project-manager": "js/project-manager",
+        "activity/keyboard-controller": "js/activity/keyboard-controller",
+        "activity/pubsub": "js/pubsub",
+        "raphael": "lib/raphael.min",
+        "wheelnav": "lib/wheelnav",
+        "easeljs.min": "lib/easeljs.min",
+        "tweenjs.min": "lib/tweenjs.min",
+        "prefixfree.min": "lib/prefixfree.min",
+        "howler": "lib/howler",
+        "Chart": "lib/Chart",
+        "abcjs": "lib/abc.min",
+        "samples": "sounds/samples",
+        "planet": "js/planet",
+        "tonejsMidi": "node_modules/@tonejs/midi/dist/Midi",
+        "p5.min": "lib/p5.min",
+        "p5.sound.min": "lib/p5.sound.min",
+        "p5.dom.min": "lib/p5.dom.min",
+        "p5-adapter": "js/p5-adapter",
+        "p5-sound-adapter": "js/p5-sound-adapter",
+        "domReady": "lib/domReady",
+        "jquery": "lib/jquery-3.7.1.min",
+        "jquery-ui": "lib/jquery-ui",
+        "materialize": "lib/materialize.min",
+        "libgif": "https://cdn.jsdelivr.net/gh/buzzfeed/libgif-js/libgif",
+        "Tone": "lib/Tone",
+        "highlight": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min",
+        "i18next": [
+            "lib/i18next.min",
+            "https://cdn.jsdelivr.net/npm/i18next@23.11.5/dist/umd/i18next.min"
+        ],
+        "i18nextHttpBackend": [
+            "lib/i18nextHttpBackend.min",
+            "https://cdn.jsdelivr.net/npm/i18next-http-backend@4.0.2/i18nextHttpBackend.min"
+        ]
+    },
+    packages: []
+});
+
+requirejs(["i18next", "i18nextHttpBackend"], function (i18next, i18nextHttpBackend) {
+    const perfTracker = (() => {
+        const canUsePerformance =
+            typeof window !== "undefined" &&
+            typeof window.performance !== "undefined" &&
+            typeof window.performance.now === "function";
+        if (!canUsePerformance) {
+            return {
+                enabled: false,
+                mark: () => {},
+                measure: () => {},
+                report: () => {}
+            };
+        }
+
+        const isEnabled = (() => {
+            try {
+                const params = new URLSearchParams(window.location.search || "");
+                return (
+                    params.get("mbPerf") === "1" || window.localStorage.getItem("mbPerf") === "1"
+                );
+            } catch (e) {
+                return false;
+            }
+        })();
+
+        const state = window.__mbPerf || {
+            enabled: isEnabled,
+            marks: {},
+            measures: {}
+        };
+        window.__mbPerf = state;
+
+        const mark = name => {
+            if (!state.enabled) return;
+            state.marks[name] = performance.now();
+        };
+
+        const measure = (name, startMark, endMark) => {
+            if (!state.enabled) return;
+            const start = state.marks[startMark];
+            const end = state.marks[endMark];
+            if (typeof start !== "number" || typeof end !== "number") return;
+            state.measures[name] = +(end - start).toFixed(2);
+        };
+
+        const report = () => {
+            if (!state.enabled) return;
+            console.log("[mbPerf] Startup measures (ms):", state.measures);
+            if (typeof console.table === "function") {
+                const rows = Object.keys(state.measures).map(name => ({
+                    measure: name,
+                    ms: state.measures[name]
+                }));
+                console.table(rows);
+            }
+        };
+
+        state.report = report;
+
+        return {
+            enabled: state.enabled,
+            mark,
+            measure,
+            report
+        };
+    })();
+
+    /**
+     * Fetch the pie-menu drawing libraries in the background.
+     *
+     * These used to be defer scripts in index.html, so both had to be fetched,
+     * parsed and executed before DOMContentLoaded -- and therefore before
+     * Music Blocks could paint -- despite neither executing a line until
+     * someone opens a pie menu.
+     *
+     * Loaded through RequireJS rather than as injected script tags. raphael is
+     * UMD: appended as a plain <script> while require.js is present it takes
+     * the anonymous define() branch, and RequireJS has no requested module to
+     * attribute that define to, so the page dies with "Mismatched anonymous
+     * define() module". Asking RequireJS for it attributes the define
+     * correctly. wheelnav is a plain global and is shimmed onto raphael.
+     *
+     * Nothing waits on this. Block.piemenuOKtoLaunch() already reports "not
+     * right now" while a pie menu is settling, and now reports the same in the
+     * short window before wheelnav arrives, so an early interaction is
+     * declined rather than throwing.
+     */
+    const loadPieMenuLibs = () => {
+        requirejs(
+            ["wheelnav"],
+            () => {},
+            err => console.error("Pie menu libraries failed to load:", err)
+        );
+    };
+
+    perfTracker.mark("loader.main.start");
+
+    // Use globally-loaded jQuery and Materialize (avoids AMD conflicts)
+    const $ = window.jQuery;
+    // Materialize v0.100.2 (bundled) uses 'Materialize' as global, not 'M'
+    const M = window.Materialize || window.M;
+
+    // Ensure both M and Materialize are available for compatibility
+    if (typeof M !== "undefined") {
+        window.M = M;
+        window.Materialize = M;
+    }
+
+    // Load highlight optionally
+    requirejs(
+        ["highlight"],
+        function (hljs) {
+            if (hljs) {
+                window.hljs = hljs;
+                hljs.highlightAll();
+            }
+        },
+        function (err) {
+            console.warn("Highlight.js failed to load, moving on...", err);
+        }
+    );
+
+    function updateContent() {
+        if (!i18next.isInitialized) return;
+        const lang = i18next.language;
+        // Screen readers pick their voice from the page language. Use the language
+        // that is actually shown (a browser language with no locale file falls back
+        // to English). Locale files use underscores (zh_CN); lang needs hyphens.
+        if (i18next.resolvedLanguage) {
+            document.documentElement.lang = i18next.resolvedLanguage.replace(/_/g, "-");
+        }
+        const elements = document.querySelectorAll("[data-i18n]");
+        elements.forEach(element => {
+            const key = element.getAttribute("data-i18n");
+            if (lang && lang.startsWith("ja")) {
+                const kanaPref =
+                    (window.localStorage && window.localStorage.getItem("kanaPreference")) ||
+                    "kanji";
+                const script = kanaPref === "kana" ? "kana" : "kanji";
+                const result = i18next.t(key, { returnObjects: true });
+                if (result && typeof result === "object") {
+                    element.textContent = result[script] || key;
+                } else {
+                    element.textContent = typeof result === "string" ? result : key;
+                }
+            } else {
+                element.textContent = i18next.t(key);
+            }
+        });
+    }
+
+    // Shared with activity.js so the two never drift apart; see
+    // js/utils/language-utils.js.
+    function toLocaleCode(language) {
+        return typeof resolvedNormalizeLanguageCode === "function"
+            ? resolvedNormalizeLanguageCode(language)
+            : language;
+    }
+
+    function resolveInitialLanguage() {
+        try {
+            const savedLanguage = window.localStorage && window.localStorage.languagePreference;
+            if (savedLanguage) {
+                if (savedLanguage === "kana" || savedLanguage === "ja-kana") {
+                    window.localStorage.setItem("languagePreference", "ja");
+                    window.localStorage.setItem("kanaPreference", "kana");
+                    return "ja";
+                }
+                if (savedLanguage === "ja-kanji") {
+                    window.localStorage.setItem("languagePreference", "ja");
+                    window.localStorage.setItem("kanaPreference", "kanji");
+                    return "ja";
+                }
+                return toLocaleCode(savedLanguage);
+            }
+        } catch (e) {
+            // Continue with navigator fallback when storage is unavailable.
+        }
+
+        const browserLanguage = (window.navigator && window.navigator.language) || "en";
+        const normalized = browserLanguage.includes("-")
+            ? browserLanguage.slice(0, browserLanguage.indexOf("-"))
+            : browserLanguage;
+        return normalized || "en";
+    }
+
+    function initializeI18next(lang) {
+        return new Promise(resolve => {
+            i18next.use(i18nextHttpBackend).init(
+                {
+                    lng: lang,
+                    fallbackLng: "en",
+                    keySeparator: false,
+                    nsSeparator: false,
+                    interpolation: {
+                        escapeValue: false
+                    },
+                    backend: {
+                        loadPath: ASSET_VERSION
+                            ? `locales/{{lng}}.json?${ASSET_VERSION}`
+                            : "locales/{{lng}}.json"
+                    }
+                },
+                function (err) {
+                    if (err) {
+                        console.error("i18next init failed:", err);
+                    }
+                    window.i18next = i18next;
+                    resolve(i18next);
+                }
+            );
+        });
+    }
+
+    async function main() {
+        try {
+            const lang = resolveInitialLanguage();
+            await initializeI18next(lang);
+            perfTracker.mark("loader.i18n.ready");
+            perfTracker.measure(
+                "loader.main_to_i18n_ready",
+                "loader.main.start",
+                "loader.i18n.ready"
+            );
+
+            if (typeof M !== "undefined" && M.AutoInit) {
+                M.AutoInit();
+            }
+
+            if (document.readyState === "loading") {
+                document.addEventListener("DOMContentLoaded", updateContent);
+            } else {
+                updateContent();
+            }
+
+            i18next.on("languageChanged", updateContent);
+
+            // Two-phase bootstrap: load core modules first, then application modules.
+            //
+            // Nothing is awaited here for createjs. index.html has no easeljs or
+            // tweenjs script tag, so window.createjs is not set before this point;
+            // it appears only once RequireJS resolves easeljs.min, which happens
+            // below as part of CORE_BOOTSTRAP_MODULES. Polling for it first meant
+            // every page load sat through the full retry budget before starting
+            // the work that actually defines it.
+
+            // Pre-define anything that a script tag did happen to put on window,
+            // so RequireJS reuses the global instead of fetching it again. Each
+            // entry is skipped when its global is absent, and the module is then
+            // loaded normally from its configured path.
+            const PRELOADED_SCRIPTS = [
+                { name: "easeljs.min", export: () => window.createjs },
+                { name: "tweenjs.min", export: () => window.createjs },
+                { name: "jquery", export: () => window.jQuery },
+                { name: "jquery-ui", export: () => window.jQuery.ui },
+                { name: "materialize", export: () => window.Materialize || window.M },
+                { name: "Tone", export: () => window.Tone },
+                { name: "howler", export: () => window.Howl }
+            ];
+
+            PRELOADED_SCRIPTS.forEach(mod => {
+                if (!requirejs.defined(mod.name) && mod.export && mod.export()) {
+                    define(mod.name, [], function () {
+                        return mod.export();
+                    });
+                }
+            });
+
+            // Note: Other modules like activity/*, utils/* are loaded by RequireJS
+            // from their file paths as configured in requirejs.config().
+            // Do NOT pre-define them here as that prevents RequireJS from loading the actual files.
+
+            const CORE_BOOTSTRAP_MODULES = [
+                "easeljs.min",
+                "tweenjs.min",
+                "utils/utils-logic",
+                "utils/platformstyle",
+                "utils/dom-helpers",
+                "utils/utils",
+                "utils/camera-utils",
+                "utils/plugin-utils",
+                "utils/macro-utils",
+                "activity/pubsub",
+                "activity/turtledefs",
+                "activity/block",
+                "activity/blocks",
+                "activity/turtle-singer",
+                "activity/turtle-painter",
+                "activity/turtle",
+                "activity/turtles",
+                "utils/synthutils",
+                "activity/notation",
+                "activity/logo"
+            ];
+
+            requirejs(
+                CORE_BOOTSTRAP_MODULES,
+                function () {
+                    perfTracker.mark("loader.core_modules.ready");
+                    perfTracker.measure(
+                        "loader.i18n_to_core_modules_ready",
+                        "loader.i18n.ready",
+                        "loader.core_modules.ready"
+                    );
+                    if (typeof window.createjs === "undefined") {
+                        console.error(
+                            "FATAL: createjs (EaselJS/TweenJS) not found. Cannot proceed."
+                        );
+                        alert(t_("Failed to load EaselJS. Please refresh the page."));
+                        return;
+                    }
+
+                    requirejs(
+                        ["activity/activity"],
+                        function () {
+                            perfTracker.mark("loader.activity_module.ready");
+
+                            // Pie-menu drawing libraries. They cannot be needed
+                            // until a block is interacted with, so they are
+                            // fetched here rather than as defer scripts in
+                            // index.html, where they delayed first paint.
+                            // wheelnav draws through raphael, so order matters.
+                            loadPieMenuLibs();
+                            perfTracker.measure(
+                                "loader.core_modules_to_activity_module_ready",
+                                "loader.core_modules.ready",
+                                "loader.activity_module.ready"
+                            );
+                            perfTracker.measure(
+                                "loader.total_bootstrap",
+                                "loader.main.start",
+                                "loader.activity_module.ready"
+                            );
+                            perfTracker.report();
+                        },
+                        function (err) {
+                            console.error("Failed to load activity/activity:", err);
+                            alert(t_("Failed to load Music Blocks. Please refresh the page."));
+                        }
+                    );
+                },
+                function (err) {
+                    console.error("Core bootstrap failed:", err);
+                    alert(
+                        t_(
+                            "Failed to initialize Music Blocks core. Please refresh the page.\n\nError: %s"
+                        ).replace(/%s/g, err.message || err)
+                    );
+                }
+            );
+        } catch (e) {
+            console.error("Error in main bootstrap:", e);
+        }
+    }
+
+    main().catch(err => console.error("Main execution failed:", err));
+});

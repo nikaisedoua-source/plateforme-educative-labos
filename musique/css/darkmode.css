@@ -1,0 +1,240 @@
+/* Dark Mode Overrides */
+body.dark {
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+}
+
+/* High Contrast Mode Overrides */
+body.highcontrast {
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+}
+
+/* High contrast icon styles */
+.highcontrast .material-icons {
+    color: #ffffff !important;
+    text-shadow: none !important;
+}
+
+/* Ensure record button turns red during recording in high contrast mode */
+.highcontrast #record.recording .dot {
+    color: #ff0000 !important;
+}
+
+/* High contrast hover box outlines */
+.highcontrast .tooltip,
+.highcontrast .hover-box {
+    border: 2px solid #ffff00 !important;
+    box-shadow: 0 0 10px #ffff00 !important;
+}
+
+.highcontrast #helpBodyDiv {
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    border: 1px solid #ffffff;
+    box-shadow: none;
+}
+
+.highcontrast #helpBodyDiv > .heading,
+.highcontrast #helpBodyDiv p {
+    color: var(--color-text-primary);
+}
+
+.highcontrast #helpBodyDiv .help-card-action {
+    background: #00ffff;
+    border-color: #ffffff;
+    color: #000000;
+    box-shadow: none;
+}
+
+.highcontrast #helpBodyDiv .help-card-action:hover,
+.highcontrast #helpBodyDiv .help-card-action:focus {
+    background: #ffffff;
+    color: #000000;
+    outline: 3px solid #ffff00;
+}
+
+.dark #helpBodyDiv .help-tour-white-icon,
+.highcontrast #helpBodyDiv .help-tour-white-icon {
+    filter: brightness(0) invert(1);
+}
+
+.highcontrast #floatingWindows .wfWinBody {
+    background-color: var(--color-bg-primary) !important;
+}
+
+.highcontrast #floatingWindows > .windowFrame > .wfWinBody .wfbWidget.help-widget-body {
+    background-color: transparent !important;
+}
+
+.highcontrast #floatingWindows > .windowFrame.help-widget-frame {
+    background: #000000 !important;
+    border: 2px solid #ffffff !important;
+    box-shadow: none;
+}
+
+.highcontrast #floatingWindows > .windowFrame.help-widget-frame > .wfTopBar {
+    background: #000080 !important;
+    border-bottom: 2px solid #ffffff !important;
+}
+
+.highcontrast #floatingWindows > .windowFrame.help-widget-frame > .wfTopBar .wftTitle {
+    color: #ffffff !important;
+}
+
+.highcontrast #floatingWindows > .windowFrame.help-widget-frame > .wfWinBody,
+.highcontrast
+    #floatingWindows
+    > .windowFrame.help-widget-frame
+    > .wfWinBody
+    .wfbWidget.help-widget-body {
+    background: #000000 !important;
+}
+
+.highcontrast #floatingWindows .windowFrame {
+    background-color: var(--color-widget-frame-bg) !important;
+    border: 1px solid #ffffff;
+}
+
+/* Help widget colors */
+.dark #helpBodyDiv {
+    background:
+        linear-gradient(
+            180deg,
+            color-mix(in srgb, var(--color-brand-primary) 12%, transparent) 0%,
+            color-mix(in srgb, var(--color-brand-primary) 3%, transparent) 38%
+        ),
+        var(--color-panel-bg);
+    color: var(--color-text-primary);
+    border-color: var(--color-border-primary);
+}
+
+.dark #helpBodyDiv > .heading,
+.dark #helpBodyDiv p {
+    color: var(--color-text-primary);
+}
+
+.dark #helpBodyDiv .help-card-action {
+    background: #1e88e5;
+    border-color: #64b5f6;
+}
+
+.dark #helpBodyDiv .help-card-action:hover,
+.dark #helpBodyDiv .help-card-action:focus {
+    background: #1976d2;
+}
+
+/* Fix white side bars in Help / Tour widget */
+.dark #floatingWindows .wfWinBody {
+    background-color: var(--color-bg-secondary) !important;
+}
+
+.dark #floatingWindows > .windowFrame > .wfWinBody .wfbWidget.help-widget-body {
+    background-color: transparent !important;
+}
+
+.dark #floatingWindows > .windowFrame.help-widget-frame {
+    background: #1d1d20 !important;
+    border-color: #366795 !important;
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+}
+
+.dark #floatingWindows > .windowFrame.help-widget-frame > .wfTopBar {
+    background: var(--color-widget-titlebar-bg) !important;
+}
+
+.dark #floatingWindows > .windowFrame.help-widget-frame > .wfTopBar .wftTitle {
+    color: #ffffff !important;
+}
+
+.dark #floatingWindows > .windowFrame.help-widget-frame > .wfWinBody,
+.dark #floatingWindows > .windowFrame.help-widget-frame > .wfWinBody .wfbWidget.help-widget-body {
+    background:
+        linear-gradient(180deg, rgba(63, 224, 209, 0.08) 0%, rgba(63, 224, 209, 0.02) 42%), #1d1d20 !important;
+}
+
+.dark #floatingWindows .windowFrame {
+    background-color: var(--color-widget-frame-bg) !important;
+}
+
+/* Fix white table header strip in floating widgets during dark mode while preserving table body colors */
+.dark #floatingWindows table thead tr:first-child td,
+.dark #floatingWindows table thead tr:first-child th {
+    background-color: var(--color-bg-tertiary) !important;
+    color: var(--color-text-primary) !important;
+}
+
+/* Trash view colors for dark and high-contrast modes consuming design system tokens */
+.dark .trash-view,
+.highcontrast .trash-view {
+    background-color: var(--color-bg-secondary) !important;
+    color: var(--color-text-primary) !important;
+    border: 2px solid var(--color-border-primary) !important;
+}
+
+.dark .button-container,
+.highcontrast .button-container {
+    background-color: var(--color-bg-tertiary) !important;
+    border-bottom: 1px solid var(--color-border-primary) !important;
+}
+
+.dark .trash-item.hover,
+.highcontrast .trash-item.hover {
+    background-color: var(--color-brand-primary-hover) !important;
+    color: var(--color-text-inverse) !important;
+}
+
+.dark .trash-item.selected,
+.highcontrast .trash-item.selected {
+    background-color: var(--color-brand-primary) !important;
+    color: var(--color-text-inverse) !important;
+}
+
+/* Improve block icon visibility in dark and high-contrast modes */
+.dark .trash-item-icon,
+.highcontrast .trash-item-icon {
+    background-color: rgba(255, 255, 255, 0.855);
+    border-radius: 3px;
+    padding: 2px;
+}
+
+/* Fix search autocomplete dropdown text in dark mode */
+body.dark #ui-id-1 .ui-menu-item-wrapper,
+body.dark #ui-id-1 a {
+    color: var(--color-text-primary) !important;
+}
+
+body.dark #ui-id-1 {
+    background-color: var(--color-bg-primary) !important;
+    border: 1px solid var(--color-border-primary) !important;
+}
+
+body.dark #ui-id-1 .ui-menu-item {
+    background-color: var(--color-bg-primary) !important;
+}
+
+body.dark #ui-id-1 .ui-state-active,
+body.dark #ui-id-1 .ui-menu-item-wrapper.ui-state-active {
+    background-color: var(--color-brand-primary) !important;
+    color: var(--color-text-inverse) !important;
+    border: none !important;
+}
+
+/* Custom Dark Mode Scrollbars for Palette Drawers & Dropdowns */
+body.dark ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+body.dark ::-webkit-scrollbar-track {
+    background: var(--color-bg-primary) !important;
+}
+
+body.dark ::-webkit-scrollbar-thumb {
+    background: var(--color-border-primary) !important;
+    border-radius: var(--radius-sm);
+}
+
+body.dark ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-text-tertiary) !important;
+}

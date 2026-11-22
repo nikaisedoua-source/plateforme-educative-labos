@@ -1,0 +1,1073 @@
+// Copyright (c) 2016-22 Walter Bender
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+// Similar to the matrix, this widget makes a mapping between pitch
+// and arpeggio sounds.
+
+/*
+   global
+
+   _, docById, getNote, setCustomChord, keySignatureToMode,
+   getModeNumbers, getTemperament, normalizeNoteAccidentals, DEFAULTVOICE,
+   ManagedTimer, parseNoteString
+*/
+/*
+   Global locations
+   js/utils/musicutils.js
+       getNote, setCustomChord, parseNoteString
+   js/utils/utils.js
+        _, docById
+   js/utils/ManagedTimer.js
+        ManagedTimer
+*/
+/* exported Arpeggio */
+
+class Arpeggio {
+    /** AMD module dependencies for lazy loading. */
+    static dependencies = ["widgets/arpeggio"];
+
+    static BUTTONDIVWIDTH = 295;
+    static CELLSIZE = 28;
+    static BUTTONSIZE = 53;
+    static ICONSIZE = 32;
+    static DEFAULTCOLS = 4;
+
+    constructor() {
+        // Populated by notes blocks in the widget clamp.
+        this.notesToPlay = [];
+        // The half-step number associated with a row; a step (in
+        // time) block is associated with a column. We need to keep
+        // track of which intersections in the grid are populated.
+        // These arrays get created each time the matrix is built.
+        this._blockMap = []; // pairs storage
+        this.defaultCols = Arpeggio.DEFAULTCOLS;
+        this._playTimeout = null;
+        if (typeof ManagedTimer !== "undefined") {
+            this._timerManager = new ManagedTimer();
+        } else if (typeof require !== "undefined") {
+            try {
+                const ManagedTimerCtor = require("../utils/ManagedTimer");
+                this._timerManager = new ManagedTimerCtor();
+            } catch (e) {
+                this._timerManager = null;
+            }
+        } else {
+            this._timerManager = null;
+        }
+        this._arpeggioCellTables = []; // cached arpeggioCellTable elements
+        this._arpeggioTable = null; // cached arpeggioTable element
+        this._keyHandler = null;
+    }
+
+    _setWidgetTimeout(callback, delay) {
+        if (this._timerManager !== null) {
+            return this._timerManager.setTimeout(callback, delay);
+        }
+        return setTimeout(callback, delay);
+    }
+
+    _clearWidgetTimeout(id) {
+        if (id === null || id === undefined) {
+            return false;
+        }
+        if (this._timerManager !== null) {
+            return this._timerManager.clearTimeout(id);
+        }
+        clearTimeout(id);
+        return true;
+    }
+
+    /**
+     * Removes the previous matrix and them make another
+     * one in DOM (Document Object Model).
+     */
+    init(activity) {
+        this._activity = activity;
+
+        this._rowLabels = [];
+        this._rowBlocks = [];
+        const _t = getTemperament(this._activity.logo.synth.whichTemperament());
+        for (let i = 0; i < _t.pitchNumber + 1; i++) {
+            this._rowBlocks.push(i);
+            this._rowLabels.push((_t.pitchNumber - i).toString());
+        }
+
+        // We use the mode number to highlight the scalar rows.
+        this._modeNumbers = getModeNumbers(
+            keySignatureToMode(this._activity.turtles.ithTurtle(0).singer.keySignature)[1]
+        ).split(" ");
+
+        this._playing = false;
+        this._playList = [];
+        this._colBlocks = []; // time steps
+        for (let i = 0; i < this.defaultCols; i++) {
+            this._colBlocks.push(i + 1);
+        }
+
+        const w = window.innerWidth;
+        this._cellScale = w / 1200;
+
+        if (this._keyHandler) {
+            document.removeEventListener("keydown", this._keyHandler, true);
+            this._keyHandler = null;
+        }
+
+        const widgetWindow = window.widgetWindows.windowFor(this, "arpeggio");
+        this.widgetWindow = widgetWindow;
+        widgetWindow.clear();
+        widgetWindow.show();
+        if (typeof widgetWindow.takeFocus === "function") {
+            widgetWindow.takeFocus();
+        }
+
+        this.playButton = widgetWindow.addButton("play-button.svg", Arpeggio.ICONSIZE, _("Play"));
+
+        this.playButton.onclick = () => {
+            this._playing = !this._playing;
+            this._activity.logo.turtleDelay = 0;
+            this._playAll();
+        };
+
+        this._save_lock = false;
+        widgetWindow.addButton("export-chunk.svg", Arpeggio.ICONSIZE, _("Save")).onclick = () => {
+            // Debounce button
+            if (!this._get_save_lock()) {
+                this._save_lock = true;
+                this._save();
+                setTimeout(() => {
+                    this._save_lock = false;
+                }, 1000);
+            }
+        };
+
+        widgetWindow.addButton("erase-button.svg", Arpeggio.ICONSIZE, _("Clear")).onclick = () => {
+            this._clear();
+        };
+
+        widgetWindow.addButton("up.svg", Arpeggio.ICONSIZE, _("Move up")).onclick = () => {
+            this._shiftOctave(-1);
+        };
+
+        widgetWindow.addButton("down.svg", Arpeggio.ICONSIZE, _("Move down")).onclick = () => {
+            this._shiftOctave(1);
+        };
+
+        this.arpeggioDiv = document.createElement("div");
+        widgetWindow.getWidgetBody().append(this.arpeggioDiv);
+        widgetWindow.getWidgetBody().style.height = "400px";
+        widgetWindow.getWidgetBody().style.width = "400px";
+
+        const arpeggioTableDiv = this.arpeggioDiv;
+        arpeggioTableDiv.style.display = "inline";
+        arpeggioTableDiv.style.visibility = "visible";
+        arpeggioTableDiv.style.border = "0px";
+        arpeggioTableDiv.replaceChildren();
+
+        // For the button callbacks
+        widgetWindow.onclose = () => {
+            if (this._keyHandler) {
+                document.removeEventListener("keydown", this._keyHandler, true);
+                this._keyHandler = null;
+            }
+            if (this._playTimeout) {
+                this._clearWidgetTimeout(this._playTimeout);
+                this._playTimeout = null;
+            }
+            if (this._timerManager !== null) {
+                this._timerManager.clearAll();
+            }
+            this._playing = false;
+            this._activity.logo.synth.stop();
+            if (
+                typeof Singer !== "undefined" &&
+                Singer.masterVolume &&
+                Singer.masterVolume.length > 0 &&
+                this._activity &&
+                this._activity.logo &&
+                this._activity.logo.synth &&
+                typeof this._activity.logo.synth.setMasterVolume === "function"
+            ) {
+                const vol =
+                    typeof last === "function"
+                        ? last(Singer.masterVolume)
+                        : Singer.masterVolume[Singer.masterVolume.length - 1];
+                this._activity.logo.synth.setMasterVolume(vol);
+            }
+
+            arpeggioTableDiv.style.visibility = "hidden";
+            this._activity.hideMsgs();
+            widgetWindow.destroy();
+        };
+
+        this._keyHandler = event => {
+            if (
+                typeof window === "undefined" ||
+                !window.widgetWindows ||
+                window.widgetWindows.focused !== widgetWindow
+            ) {
+                return;
+            }
+
+            if (
+                this._activity &&
+                this._activity.blocks &&
+                this._activity.blocks.activeBlock !== null &&
+                this._activity.blocks.activeBlock !== undefined
+            ) {
+                return;
+            }
+
+            const activeElement = document.activeElement;
+            if (
+                activeElement &&
+                (activeElement.tagName === "INPUT" ||
+                    activeElement.tagName === "TEXTAREA" ||
+                    activeElement.isContentEditable)
+            ) {
+                return;
+            }
+
+            if (
+                activeElement &&
+                (activeElement.tagName === "BUTTON" || activeElement.tagName === "SELECT")
+            ) {
+                return;
+            }
+
+            if (event.key === " " || event.code === "Space" || event.keyCode === 32) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (event.repeat) {
+                    return;
+                }
+                if (this.playButton && typeof this.playButton.onclick === "function") {
+                    this.playButton.onclick();
+                } else {
+                    this._playing = !this._playing;
+                    this._activity.logo.turtleDelay = 0;
+                    this._playAll();
+                }
+                return;
+            }
+
+            if (
+                event.shiftKey &&
+                (event.key === "ArrowUp" || event.code === "ArrowUp" || event.keyCode === 38)
+            ) {
+                event.preventDefault();
+                event.stopPropagation();
+                this._shiftOctave(-1);
+                return;
+            }
+
+            if (
+                event.shiftKey &&
+                (event.key === "ArrowDown" || event.code === "ArrowDown" || event.keyCode === 40)
+            ) {
+                event.preventDefault();
+                event.stopPropagation();
+                this._shiftOctave(1);
+            }
+        };
+
+        document.addEventListener("keydown", this._keyHandler, true);
+
+        this.widgetWindow.onmaximize = this._scale;
+
+        // We use an outer div to scroll vertically and an inner div to scroll horizontally.
+        const arpeggioOuterDiv = document.createElement("div");
+        arpeggioOuterDiv.id = "arpeggioOuterDiv";
+        const arpeggioInnerDiv = document.createElement("div");
+        arpeggioInnerDiv.id = "arpeggioInnerDiv";
+        const arpeggioTableElement = document.createElement("table");
+        arpeggioTableElement.id = "arpeggioTable";
+        arpeggioTableElement.setAttribute("cellpadding", "0px");
+        arpeggioInnerDiv.append(arpeggioTableElement);
+        arpeggioOuterDiv.append(arpeggioInnerDiv);
+        arpeggioTableDiv.append(arpeggioOuterDiv);
+
+        // Each row in the arpeggio table contains a note label in the
+        // first column and a table of buttons in the second column.
+        this._arpeggioTable = docById("arpeggioTable");
+        const arpeggioTable = this._arpeggioTable;
+        this._arpeggioCellTables = [];
+
+        let j = 0;
+        let arpeggioTableRow;
+        let labelCell;
+        let arpeggioCell;
+        let arpeggioRow;
+        let arpeggioCellTable;
+        for (let i = 0; i < this._rowLabels.length; i++) {
+            arpeggioTableRow = arpeggioTable.insertRow();
+
+            // A cell for the row label
+            labelCell = arpeggioTableRow.insertCell();
+            labelCell.style.backgroundColor = "var(--color-label-bg)";
+            labelCell.style.fontSize = this._cellScale * 50 + "%";
+            labelCell.style.height = Arpeggio.CELLSIZE + "px";
+            labelCell.style.width = Arpeggio.CELLSIZE + "px";
+            labelCell.style.minWidth = 0;
+            labelCell.style.maxWidth = 0;
+            labelCell.className = "headcol";
+            labelCell.textContent = this._rowLabels[j];
+
+            arpeggioCell = arpeggioTableRow.insertCell();
+            // Create tables to store individual notes.
+            const cellTable = document.createElement("table");
+            cellTable.setAttribute("cellpadding", "0px");
+            cellTable.id = `arpeggioCellTable${j}`;
+            cellTable.insertRow();
+            arpeggioCell.append(cellTable);
+            arpeggioCellTable = cellTable;
+            this._arpeggioCellTables.push(arpeggioCellTable);
+
+            // We'll use this element to put the clickable notes for this row.
+            arpeggioRow = arpeggioCellTable.insertRow();
+            arpeggioRow.setAttribute("id", "arpeggio" + j);
+
+            j += 1;
+        }
+
+        // An extra row for the time values
+        arpeggioTableRow = arpeggioTable.insertRow();
+        labelCell = arpeggioTableRow.insertCell();
+        labelCell.style.backgroundColor = "var(--color-label-bg)";
+        labelCell.style.fontSize = this._cellScale * 50 + "%";
+        labelCell.style.height = Arpeggio.CELLSIZE + "px";
+        labelCell.style.width = Arpeggio.CELLSIZE + "px";
+        labelCell.style.minWidth = Arpeggio.CELLSIZE + "px";
+        labelCell.style.maxWidth = labelCell.style.minWidth;
+        labelCell.className = "headcol";
+        labelCell.textContent = "";
+
+        const outerDiv = docById("arpeggioOuterDiv");
+        outerDiv.style.height = widgetWindow.getWidgetBody().style.height;
+        outerDiv.style.width = widgetWindow.getWidgetBody().style.width;
+        outerDiv.style.marginLeft = "0px";
+
+        const innerDiv = docById("arpeggioInnerDiv");
+        innerDiv.style.height = widgetWindow.getWidgetBody().style.height;
+        innerDiv.style.width = widgetWindow.getWidgetBody().style.width;
+        innerDiv.style.marginLeft = "0px";
+
+        arpeggioCell = arpeggioTableRow.insertCell();
+        // Create table to store arpeggio names.
+        const arpeggioNoteTable = document.createElement("table");
+        arpeggioNoteTable.setAttribute("cellpadding", "0px");
+        arpeggioNoteTable.id = "arpeggioNoteTable";
+        arpeggioNoteTable.insertRow();
+        arpeggioCell.append(arpeggioNoteTable);
+
+        // Add any arpeggio blocks here.
+        for (let i = 0; i < this.defaultCols; i++) {
+            this._addNote(i);
+        }
+
+        //Change widget size on fullscreen mode, else
+        //revert back to original size on unfullscreen mode
+        widgetWindow.onmaximize = () => {
+            if (widgetWindow._maximized) {
+                widgetWindow.getWidgetBody().style.position = "absolute";
+                widgetWindow.getWidgetBody().style.height = "calc(100vh - 80px)";
+                widgetWindow.getWidgetBody().style.width = "200vh";
+                docById("arpeggioOuterDiv").style.height = "calc(100vh - 80px)";
+                docById("arpeggioOuterDiv").style.width = "calc(200vh - 64px)";
+                docById("arpeggioInnerDiv").style.width = "calc(200vh - 64px)";
+                docById("arpeggioInnerDiv").style.height = "calc(100vh - 80px)";
+                widgetWindow.getWidgetBody().style.left = "70px";
+            } else {
+                widgetWindow.getWidgetBody().style.position = "relative";
+                widgetWindow.getWidgetBody().style.left = "0px";
+                widgetWindow.getWidgetBody().style.height = "400px";
+                widgetWindow.getWidgetBody().style.width = "400px";
+                docById("arpeggioOuterDiv").style.height =
+                    widgetWindow.getWidgetBody().style.height;
+                docById("arpeggioOuterDiv").style.width = widgetWindow.getWidgetBody().style.width;
+                docById("arpeggioInnerDiv").style.height =
+                    widgetWindow.getWidgetBody().style.height;
+                docById("arpeggioInnerDiv").style.width = widgetWindow.getWidgetBody().style.width;
+            }
+        };
+
+        this.makeClickable();
+        activity.textMsg(_("Click in the grid to add steps to the arpeggio."), 3000);
+    }
+
+    /**
+     * @public
+     * @returns {void}
+     */
+    clearBlocks() {
+        this._rowBlocks = [];
+        this._colBlocks = [];
+    }
+
+    /**
+     * @public
+     * @param {number} pitchBlock
+     * @param {number} arpeggioBlock
+     * @returns {void}
+     */
+    addNode(halfStep, timeStep) {
+        let obj;
+        for (let i = 0; i < this._blockMap.length; i++) {
+            obj = this._blockMap[i];
+            if (obj[0] === halfStep && obj[1] === timeStep) {
+                return; // node is already in the list
+            }
+        }
+        this._blockMap.push([halfStep, timeStep]);
+    }
+
+    /**
+     * @public
+     * @param {number} pitchBlock
+     * @param {number} arpeggioBlock
+     * @returns {void}
+     */
+    removeNode(halfStep, timeStep) {
+        let obj;
+        for (let i = 0; i < this._blockMap.length; i++) {
+            obj = this._blockMap[i];
+            if (obj[0] === halfStep && obj[1] === timeStep) {
+                this._blockMap[i] = [-1, -1]; // Mark as removed
+            }
+        }
+    }
+
+    /**
+     * @private
+     * @returns {HTMLElement}
+     */
+    _get_save_lock() {
+        return this._save_lock;
+    }
+
+    /**
+     * @private
+     * @param {number} row index
+     * @returns {boolean} true/false
+     */
+    _inMode(i) {
+        return this._modeNumbers.includes(i.toString());
+    }
+
+    /**
+     * @private
+     * @param {number} row index
+     * @returns {boolean} true/false
+     */
+    _rowInMode(i) {
+        const ii = (this._rowLabels.length - i - 1) % (this._rowLabels.length - 1);
+        return this._inMode(ii);
+    }
+
+    /**
+     * @private
+     * @param {number} row index
+     * @returns {string} color, e.g. "#ffffff"
+     */
+    _getBackgroundColor(i) {
+        if (this._rowInMode(i)) {
+            return "var(--color-selector-selected)";
+        }
+        return "var(--color-selector-bg)";
+    }
+
+    /**
+     * @private
+     * @param {number} row index
+     * @returns {string} color, e.g. "var(--color-brand-primary-hover)"
+     */
+    _getHoverColor(i) {
+        if (this._rowInMode(i)) {
+            return "var(--color-brand-primary-hover)";
+        }
+        return "var(--color-selector-selected)";
+    }
+
+    /**
+     * @private
+     * @param {number} arpeggioIdx
+     * @returns {void}
+     */
+    _addNote(arpeggioIdx) {
+        const arpeggioName = (arpeggioIdx + 1).toString();
+        const arpeggioTable = this._arpeggioTable;
+        let table;
+        let row;
+        let headerCell;
+        for (let i = 0; i < arpeggioTable.rows.length - 1; i++) {
+            table = this._arpeggioCellTables[i];
+            row = table.rows[0];
+            const cell = row.insertCell();
+            cell.style.height = Arpeggio.CELLSIZE + "px";
+            cell.width = Arpeggio.CELLSIZE;
+            cell.style.width = cell.width;
+            cell.style.minWidth = cell.style.width;
+            cell.style.maxWidth = cell.style.width;
+            cell.style.backgroundColor = this._getBackgroundColor(i);
+            cell.style.border = "2px solid white";
+            cell.style.borderRadius = "10px";
+
+            cell.setAttribute("id", i + "," + arpeggioIdx); // row,column
+
+            cell.onmouseover = () => {
+                if (cell.style.backgroundColor !== "black") {
+                    cell.style.backgroundColor = this._getHoverColor(i);
+                }
+            };
+            cell.onmouseout = () => {
+                if (cell.style.backgroundColor !== "black") {
+                    cell.style.backgroundColor = this._getBackgroundColor(i);
+                }
+            };
+        }
+
+        const arpeggioNoteTable = docById("arpeggioNoteTable");
+        row = arpeggioNoteTable.rows[0];
+        headerCell = row.insertCell();
+        headerCell.height = Arpeggio.CELLSIZE + 1 + "px";
+        headerCell.width = Arpeggio.CELLSIZE;
+        headerCell.style.width = headerCell.width + "px";
+        headerCell.style.minWidth = headerCell.style.width;
+        headerCell.style.maxWidth = headerCell.style.width;
+        headerCell.style.height = Arpeggio.CELLSIZE + "px";
+        headerCell.style.fontSize = Math.floor(this._cellScale * 50) + "%";
+        headerCell.style.lineHeight = 100 + "%";
+        headerCell.setAttribute("id", arpeggioIdx);
+        headerCell.className = "headcol";
+        headerCell.textContent = arpeggioName;
+        headerCell.style.backgroundColor = "var(--color-selector-bg)";
+    }
+
+    /**
+     * Once the entire matrix is generated, this function makes it clickable.
+     * @public
+     * @returns {void}
+     */
+    makeClickable() {
+        const arpeggioTable = this._arpeggioTable;
+        const arpeggioNoteTable = docById("arpeggioNoteTable");
+        let table;
+        let cellRow;
+        let arpeggioRow;
+        let arpeggioCell;
+        let cell;
+        for (let i = 0; i < arpeggioTable.rows.length - 1; i++) {
+            table = this._arpeggioCellTables[i];
+            cellRow = table.rows[0];
+
+            for (let j = 0; j < cellRow.cells.length; j++) {
+                cell = cellRow.cells[j];
+
+                arpeggioRow = arpeggioNoteTable.rows[0];
+
+                arpeggioCell = arpeggioRow.cells[j];
+
+                cell.onclick = e => {
+                    const currCell = e.target;
+                    const rowcol = currCell.id.split(",");
+                    if (currCell.style.backgroundColor === "black") {
+                        currCell.style.backgroundColor = this._getBackgroundColor(
+                            Number(rowcol[0])
+                        );
+                        this._setCell(rowcol[1], rowcol[0], false);
+                    } else {
+                        // Only one cell per column can be set.
+                        this._clearColumn(rowcol[1], rowcol[0]);
+                        currCell.style.backgroundColor = "black";
+                        this._setCell(rowcol[1], rowcol[0], true);
+                    }
+                };
+            }
+        }
+
+        // Mark any cells found in the blockMap from previous
+        // instances of the matrix.
+        let obj;
+        let row;
+        let col;
+        for (let i = 0; i < this._blockMap.length; i++) {
+            obj = this._blockMap[i];
+            if (obj[0] !== -1) {
+                // Look for this note in the pitch and arpeggio blocks.
+                row = this._rowBlocks.indexOf(obj[0]);
+                col = -1;
+                for (let j = 0; j < this._colBlocks.length; j++) {
+                    if (this._colBlocks[j] === obj[1]) {
+                        col = j;
+                        break;
+                    }
+                }
+
+                if (col === -1) {
+                    continue;
+                }
+
+                // If we found a match, mark this cell and add this
+                // note to the play list.
+                if (row < 0) {
+                    continue;
+                }
+                table = this._arpeggioCellTables[row];
+                cellRow = table.rows[0];
+
+                cell = cellRow.cells[col];
+
+                if (cell !== undefined) {
+                    cell.style.backgroundColor = "black";
+                    this.__playCell(row, col, cell, false);
+                }
+            }
+        }
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _scale() {
+        const windowHeight =
+            this.getWidgetFrame().offsetHeight - this.getDragElement().offsetHeight;
+        const widgetBody = this.getWidgetBody();
+        const scale = this.isMaximized ? windowHeight / widgetBody.offsetHeight : 1;
+        widgetBody.style.display = "flex";
+        widgetBody.style.flexDirection = "column";
+        widgetBody.style.alignItems = "center";
+        widgetBody.children[0].style.display = "flex";
+        widgetBody.children[0].style.flexDirection = "column";
+        widgetBody.children[0].style.alignItems = "center";
+
+        const svg = this.getWidgetBody().getElementsByTagName("svg")[0];
+        svg.style.pointerEvents = "none";
+        svg.setAttribute("height", `${400 * scale}px`);
+        svg.setAttribute("width", `${400 * scale}px`);
+        setTimeout(() => {
+            svg.style.pointerEvents = "auto";
+        }, 100);
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _playAll() {
+        // Play all of the arpeggio cells in the matrix.
+        const icon = this.playButton;
+        if (this._playing) {
+            if (icon && typeof icon.replaceChildren === "function") {
+                icon.replaceChildren(
+                    document.createTextNode("\u00a0\u00a0"),
+                    (() => {
+                        const img = document.createElement("img");
+                        img.src = "header-icons/stop-button.svg";
+                        img.title = _("Stop");
+                        img.alt = _("Stop");
+                        img.height = Arpeggio.ICONSIZE;
+                        img.width = Arpeggio.ICONSIZE;
+                        img.style.verticalAlign = "middle";
+                        img.style.alignContent = "center";
+                        return img;
+                    })(),
+                    document.createTextNode("\u00a0\u00a0")
+                );
+            }
+        } else {
+            if (icon && typeof icon.replaceChildren === "function") {
+                icon.replaceChildren(
+                    document.createTextNode("\u00a0\u00a0"),
+                    (() => {
+                        const img = document.createElement("img");
+                        img.src = "header-icons/play-button.svg";
+                        img.title = _("Play");
+                        img.alt = _("Play");
+                        img.height = Arpeggio.ICONSIZE;
+                        img.width = Arpeggio.ICONSIZE;
+                        img.style.verticalAlign = "middle";
+                        img.style.alignContent = "center";
+                        return img;
+                    })(),
+                    document.createTextNode("\u00a0\u00a0")
+                );
+            }
+            if (this._playTimeout) {
+                this._clearWidgetTimeout(this._playTimeout);
+                this._playTimeout = null;
+            }
+            this._activity.logo.synth.stop();
+            this._playing = false;
+            return;
+        }
+        this._activity.logo.synth.stop();
+
+        const pairs = this.__makePairsList();
+
+        this._playList = [];
+        // Make a list of all the notes to play.
+        const notesToPlay = this.notesToPlay.length > 0 ? this.notesToPlay : [["C4", 1 / 16]];
+        for (let n = 0; n < notesToPlay.length; n++) {
+            const noteValue = notesToPlay[n][1];
+            const [letter, octave] = parseNoteString(notesToPlay[n][0]);
+            for (let i = 0; i < pairs.length; i++) {
+                if (pairs[i][0] === -1) {
+                    this._playList.push(["", noteValue]);
+                } else {
+                    this._playList.push([
+                        getNote(
+                            letter,
+                            octave,
+                            this._rowLabels.length - pairs[i][0] - 1, // Transposition
+                            this._activity.turtles.ithTurtle(0).singer.keySignature,
+                            false,
+                            null,
+                            this._activity.errorMsg
+                        ),
+                        noteValue
+                    ]);
+                }
+            }
+        }
+        this.__playNote(0);
+    }
+
+    /**
+     * @private
+     * @returns {obj}
+     */
+    __makePairsList() {
+        const pairs = [];
+
+        // For each column (time), look for a selected cell.
+        const arpeggioTable = this._arpeggioTable;
+        let table;
+        let row;
+        let cell;
+        for (let j = 0; j < this.defaultCols; j++) {
+            let thisPair = [-1, j];
+            for (let i = 0; i < arpeggioTable.rows.length - 1; i++) {
+                table = this._arpeggioCellTables[i];
+                row = table.rows[0];
+                cell = row.cells[j];
+                if (cell.style.backgroundColor === "black") {
+                    thisPair = [i, j];
+                    //pairs.push([i, j]);
+                    break;
+                }
+            }
+            pairs.push(thisPair);
+        }
+
+        return pairs;
+    }
+
+    /**
+     * @private
+     * @param: {number} i
+     * @returns {void}
+     */
+    __playNote(i) {
+        if (!this._playing) {
+            return;
+        }
+        if (i < this._playList.length) {
+            if (this._playList[i][0].length > 0) {
+                this._activity.logo.synth.trigger(
+                    0,
+                    normalizeNoteAccidentals(this._playList[i][0][0]) + this._playList[i][0][1],
+                    this._playList[i][1],
+                    DEFAULTVOICE,
+                    null,
+                    null,
+                    null
+                );
+            }
+            this._playTimeout = this._setWidgetTimeout(() => {
+                this.__playNote(i + 1);
+            }, 2600 * this._playList[i][1]);
+        } else {
+            const icon = this.playButton;
+            if (icon && typeof icon.replaceChildren === "function") {
+                icon.replaceChildren(
+                    document.createTextNode("\u00a0\u00a0"),
+                    (() => {
+                        const img = document.createElement("img");
+                        img.src = "header-icons/play-button.svg";
+                        img.title = _("Play");
+                        img.alt = _("Play");
+                        img.height = Arpeggio.ICONSIZE;
+                        img.width = Arpeggio.ICONSIZE;
+                        img.style.verticalAlign = "middle";
+                        img.style.alignContent = "center";
+                        return img;
+                    })(),
+                    document.createTextNode("\u00a0\u00a0")
+                );
+            }
+            this._playing = false;
+        }
+    }
+
+    /**
+     * @private
+     * @param {number} colIndex
+     * @param {number} rowIndex
+     * @param {boolean} playNote
+     * @returns {void}
+     */
+    _setCell(colIndex, rowIndex, playNote) {
+        // Sets corresponding pitch/arpeggio when user clicks on any cell and
+        // plays them.
+        const coli = Number(colIndex);
+        const rowi = Number(rowIndex);
+
+        // Find the arpeggio cell
+        const table = this._arpeggioCellTables[rowi];
+        const row = table.rows[0];
+
+        const pitchBlock = this._rowBlocks[rowi];
+        const timeBlock = this._colBlocks[coli];
+        if (playNote) {
+            this.addNode(pitchBlock, timeBlock);
+        } else {
+            this.removeNode(pitchBlock, timeBlock);
+        }
+
+        let cell;
+        for (let i = 0; i < row.cells.length; i++) {
+            cell = row.cells[i];
+            if (cell.style.backgroundColor === "black") {
+                this.__playCell(rowi, i, cell, playNote);
+            }
+        }
+    }
+
+    /**
+     * Shifts active matrix nodes up or down by the specified row delta.
+     * @private
+     * @param {number} deltaRow - Row index delta
+     * @returns {void}
+     */
+    _shiftOctave(deltaRow) {
+        if (!this._blockMap || this._blockMap.length === 0) return;
+
+        const updatedMap = [];
+        for (let i = 0; i < this._blockMap.length; i++) {
+            const obj = this._blockMap[i];
+            if (obj && obj[0] !== -1) {
+                const oldRow = this._rowBlocks.indexOf(obj[0]);
+                const oldCol = this._colBlocks.indexOf(obj[1]);
+                if (oldRow < 0 || oldCol < 0) {
+                    continue;
+                }
+                const table = docById("arpeggioCellTable" + oldRow);
+                if (table && table.rows && table.rows[0] && table.rows[0].cells[oldCol]) {
+                    table.rows[0].cells[oldCol].style.backgroundColor =
+                        this._getBackgroundColor(oldRow);
+                }
+
+                const numRows = this._rowBlocks.length;
+                const newRowIndex = (oldRow + deltaRow + numRows) % numRows;
+                const newHalfStep = this._rowBlocks[newRowIndex];
+                updatedMap.push([newHalfStep, obj[1]]);
+            }
+        }
+
+        this._blockMap = updatedMap;
+
+        for (let i = 0; i < this._blockMap.length; i++) {
+            const [halfStep, timeStep] = this._blockMap[i];
+            const row = this._rowBlocks.indexOf(halfStep);
+            const col = this._colBlocks.indexOf(timeStep);
+            if (row >= 0 && col >= 0) {
+                const table = docById("arpeggioCellTable" + row);
+                if (table && table.rows && table.rows[0] && table.rows[0].cells[col]) {
+                    table.rows[0].cells[col].style.backgroundColor = "black";
+                }
+            }
+        }
+    }
+
+    /**
+     * @private
+     * @param {number} rowIndex
+     * @param {number} colIndex
+     * @param {obj} cell
+     * @param {boolean} playNote
+     * @returns {void}
+     */
+    __playCell(rowIndex, colIndex, cell, playNote) {
+        if (playNote) {
+            const noteData = this.notesToPlay[0] || ["C4", 1 / 16];
+            const [letter, octave] = parseNoteString(noteData[0]);
+            const noteObj = getNote(
+                letter,
+                octave,
+                this._rowLabels.length - rowIndex - 1, // Transposition
+                this._activity.turtles.ithTurtle(0).singer.keySignature,
+                false,
+                null,
+                this._activity.errorMsg
+            );
+
+            const note = noteObj[0] + noteObj[1];
+            this._activity.logo.synth.trigger(
+                0,
+                normalizeNoteAccidentals(note),
+                noteData[1],
+                DEFAULTVOICE,
+                null,
+                null,
+                null
+            );
+        }
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _clearColumn(colIndex, rowIndex) {
+        // "Unclick" every entry in a column in the matrix (except for
+        // cell at col/rowIndex).
+        const arpeggioTable = this._arpeggioTable;
+        let table;
+        let row;
+        let cell;
+        for (let i = 0; i < arpeggioTable.rows.length - 1; i++) {
+            if (i === rowIndex) {
+                continue;
+            }
+            table = this._arpeggioCellTables[i];
+            row = table.rows[0];
+            cell = row.cells[colIndex];
+            if (cell.style.backgroundColor === "black") {
+                cell.style.backgroundColor = this._getBackgroundColor(i);
+                this._setCell(colIndex, i, false);
+            }
+        }
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _clear() {
+        if (this._playing) {
+            this._playing = false;
+            if (this._playTimeout) {
+                this._clearWidgetTimeout(this._playTimeout);
+                this._playTimeout = null;
+            }
+            this._activity.logo.synth.stop();
+            const icon = this.playButton;
+            if (icon && typeof icon.replaceChildren === "function") {
+                icon.replaceChildren(
+                    document.createTextNode("\u00a0\u00a0"),
+                    (() => {
+                        const img = document.createElement("img");
+                        img.src = "header-icons/play-button.svg";
+                        img.title = _("Play");
+                        img.alt = _("Play");
+                        img.height = Arpeggio.ICONSIZE;
+                        img.width = Arpeggio.ICONSIZE;
+                        img.style.verticalAlign = "middle";
+                        img.style.alignContent = "center";
+                        return img;
+                    })(),
+                    document.createTextNode("\u00a0\u00a0")
+                );
+            }
+        }
+        // "Unclick" every entry in the matrix.
+        const arpeggioTable = this._arpeggioTable;
+        let table;
+        let row;
+        let cell;
+        for (let i = 0; i < arpeggioTable.rows.length - 1; i++) {
+            table = this._arpeggioCellTables[i];
+            row = table.rows[0];
+            for (let j = 0; j < row.cells.length; j++) {
+                cell = row.cells[j];
+                if (cell.style.backgroundColor === "black") {
+                    cell.style.backgroundColor = this._getBackgroundColor(i);
+                    this._setCell(j, i, false);
+                }
+            }
+        }
+    }
+
+    /**
+     * @private
+     * @returns {void}
+     */
+    _save() {
+        // Saves the current matrix as a custom Chord
+        // Export format: [scalar, semitone] where scalar is the scale degree (0-based)
+        // and semitone is the chromatic offset from that scale degree
+        const pairs = this.__makePairsList();
+        const chordValues = [];
+        for (let i = 0; i < pairs.length; i++) {
+            if (pairs[i][0] === -1) {
+                chordValues.push(["-", "-"]); // rest
+            } else {
+                const ii = this._rowBlocks.length - pairs[i][0] - 1;
+                if (this._inMode(ii)) {
+                    // Note is in the mode - export as (scalar, 0)
+                    const scalar = this._modeNumbers.indexOf(ii.toString());
+                    chordValues.push([scalar, 0]);
+                } else {
+                    // Note is not in the mode - find nearest lower scale degree
+                    // and calculate semitone offset
+                    if (pairs[i][0] === 0) {
+                        // top row -> octave
+                        chordValues.push([this._modeNumbers.length, 0]);
+                    } else {
+                        let semitoneOffset = 1;
+                        while (ii - semitoneOffset >= 0) {
+                            if (this._inMode(ii - semitoneOffset)) {
+                                const scalar = this._modeNumbers.indexOf(
+                                    (ii - semitoneOffset).toString()
+                                );
+                                chordValues.push([scalar, semitoneOffset]);
+                                break;
+                            }
+                            semitoneOffset += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        setCustomChord(chordValues);
+
+        // Also, save as an arpeggio block.
+        const newStack = [
+            [0, "arpeggio", 100, 100, [null, 1, 2, 11]],
+            [1, ["chordname", { value: "custom" }], 0, 0, [0]],
+            [2, ["newnote", { collapsed: false }], 0, 0, [0, 3, 6, 10]],
+            [3, "divide", 0, 0, [2, 4, 5]],
+            [4, ["number", { value: 1 }], 0, 0, [3]],
+            [5, ["number", { value: 12 }], 0, 0, [3]],
+            [6, "vspace", 0, 0, [2, 7]],
+            [7, "pitch", 0, 0, [6, 8, 9, null]],
+            [8, ["solfege", { value: "do" }], 0, 0, [7]],
+            [9, ["number", { value: 4 }], 0, 0, [7]],
+            [10, "hidden", 0, 0, [2, null]],
+            [11, "hidden", 0, 0, [0, null]]
+        ];
+        this._activity.blocks.loadNewBlocks(newStack);
+    }
+}
+if (typeof module !== "undefined") {
+    module.exports = Arpeggio;
+}

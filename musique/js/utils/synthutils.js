@@ -1,0 +1,3152 @@
+// Copyright (c) 2016-21 Walter Bender
+// Copyright (c) 2025 Anvita Prasad DMP'25
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/*
+   global
+
+   last, Tone, getTemperament, pitchToNumber,
+   getNoteFromInterval, FLAT, SHARP, pitchToFrequency, getCustomNote,
+   getOctaveRatio, getEffectiveOctaveRatio, isCustomTemperament, isEquallyTempered, Singer, DOUBLEFLAT, DOUBLESHARP,
+   DEFAULTDRUM, getOscillatorTypes, numberToPitch, platform,
+   getArticulation, stripMicrotonalPrefix,
+   DEFAULTVOICE, normalizeNoteAccidentals, parseNoteString, clampNumber
+*/
+
+/*
+   Global Locations
+    - js/utils/utils.js
+        _, last
+    - js/utils/musicutils.js
+        pitchToNumber, getNoteFromInterval, FLAT, SHARP, pitchToFrequency, getCustomNote,
+        isCustomTemperament, DOUBLEFLAT, DOUBLESHARP, DEFAULTDRUM, getOscillatorTypes, numberToPitch,
+        getArticulation, stripMicrotonalPrefix, getOctaveRatio, getTemperament, DEFAULTVOICE, parseNoteString
+    - js/turtle-singer.js
+        Singer
+    - js/utils/platformstyle.js
+        platform
+*/
+
+/*
+   exported
+
+   NOISENAMES, VOICENAMES, DRUMNAMES, EFFECTSNAMES, CUSTOMSAMPLES,
+   instrumentsEffects, instrumentsFilters, Synth
+*/
+
+/**
+ * The number of voices in polyphony.
+ * Raised from 3 to 6 to prevent voice exhaustion and audio engine crashes
+ * during infinite-loop playback with chords or multiple turtles.
+ * @constant
+ * @type {number}
+ * @default 6
+ */
+const POLYCOUNT = 6;
+
+/**
+ * Array of names and details for various noise synthesizers.
+ * @constant
+ * @type {Array<Array<string>>}
+ */
+const NOISENAMES = [
+    //.TRANS: white noise synthesizer
+    [_("white noise"), "noise1", "images/synth.svg", "electronic"],
+    //.TRANS: brown noise synthesizer
+    [_("brown noise"), "noise2", "images/synth.svg", "electronic"],
+    //.TRANS: pink noise synthesizer
+    [_("pink noise"), "noise3", "images/synth.svg", "electronic"]
+];
+
+/**
+ * Array of names and details for various musical instruments.
+ * @constant
+ * @type {Array<Array<string>>}
+ */
+const VOICENAMES = [
+    //.TRANS: musical instrument
+    [_("piano"), "piano", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("violin"), "violin", "images/voices.svg", "string"],
+    //.TRANS: viola musical instrument
+    [_("viola"), "viola", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("cello"), "cello", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("bass"), "bass", "images/voices.svg", "string"],
+    //.TRANS: viola musical instrument
+    [_("double bass"), "double bass", "images/voices.svg", "string"],
+    //.TRANS: sitar musical instrument
+    [_("sitar"), "sitar", "images/synth.svg", "string"],
+    //.TRANS: harmonium musical instrument
+    [_("harmonium"), "harmonium", "images/voices.svg", "string"],
+    //.TRANS: mandolin musical instrument
+    [_("mandolin"), "mandolin", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("guitar"), "guitar", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("acoustic guitar"), "acoustic guitar", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("flute"), "flute", "images/voices.svg", "wind"],
+    //.TRANS: musical instrument
+    [_("clarinet"), "clarinet", "images/voices.svg", "wind"],
+    //.TRANS: musical instrument
+    [_("saxophone"), "saxophone", "images/voices.svg", "wind"],
+    //.TRANS: musical instrument
+    [_("tuba"), "tuba", "images/voices.svg", "wind"],
+    //.TRANS: musical instrument
+    [_("trumpet"), "trumpet", "images/voices.svg", "wind"],
+    //.TRANS: musical instrument
+    [_("oboe"), "oboe", "images/voices.svg", "wind"],
+    //.TRANS: musical instrument
+    [_("trombone"), "trombone", "images/voices.svg", "wind"],
+    //.TRANS: musical instrument
+    [_("banjo"), "banjo", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("koto"), "koto", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("dulcimer"), "dulcimer", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("electric guitar"), "electric guitar", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("bassoon"), "bassoon", "images/voices.svg", "string"],
+    //.TRANS: musical instrument
+    [_("celeste"), "celeste", "images/voices.svg", "string"],
+    //.TRANS: xylophone musical instrument
+    [_("xylophone"), "xylophone", "images/8_bellset_key_6.svg", "precussion"],
+    //.TRANS: polytone synthesizer
+    [_("electronic synth"), "electronic synth", "images/synth.svg", "electronic"],
+    //.TRANS: simple monotone synthesizer
+    // [_('simple 1'), 'simple 1', 'images/synth.svg', 'electronic'],
+    //.TRANS: simple monotone synthesizer
+    // [_('simple-2'), 'simple 2', 'images/synth.svg', 'electronic'],
+    //.TRANS: simple monotone synthesizer
+    // [_('simple-3'), 'simple 3', 'images/synth.svg', 'electronic'],
+    //.TRANS: simple monotone synthesizer
+    // [_('simple-4'), 'simple 4', 'images/synth.svg', 'electronic'],
+    //.TRANS: sine wave
+    [_("sine"), "sine", "images/synth.svg", "electronic"],
+    //.TRANS: square wave
+    [_("square"), "square", "images/synth.svg", "electronic"],
+    //.TRANS: sawtooth wave
+    [_("sawtooth"), "sawtooth", "images/synth.svg", "electronic"],
+    //.TRANS: triangle wave
+    [_("triangle"), "triangle", "images/synth.svg", "electronic"],
+    //.TRANS: customize voice
+    [_("custom"), "custom", "images/synth.svg", "electronic"],
+    //.TRANS: vibraphone musical instrument
+    [_("vibraphone"), "vibraphone", "images/synth.svg", "electronic"]
+];
+
+// drum symbols are from
+// http://lilypond.org/doc/v2.18/Documentation/notation/percussion-notes
+/**
+ * Array of names and details for various drum instruments.
+ * @constant
+ * @type {Array<Array<string>>}
+ */
+const DRUMNAMES = [
+    //.TRANS: musical instrument
+    [_("snare drum"), "snare drum", "images/snaredrum.svg", "sn", "drum"],
+    //.TRANS: musical instrument
+    [_("snare hard"), "snare hard", "images/snaredrum.svg", "sn", "drum"],
+    //.TRANS: musical instrument
+    [_("snare soft"), "snare soft", "images/snaredrum.svg", "sn", "drum"],
+    //.TRANS: musical instrument
+    [_("snare roll"), "snare roll", "images/snaredrum.svg", "sn", "drum"],
+    //.TRANS: musical instrument
+    [_("kick drum"), "kick drum", "images/kick.svg", "bd", "drum"],
+    //.TRANS: musical instrument
+    [_("heavy kick"), "heavy kick", "images/kick.svg", "bd", "drum"],
+    //.TRANS: musical instrument
+    [_("bass drum"), "bass drum", "images/kick.svg", "bd", "drum"],
+    //.TRANS: musical instrument
+    [_("tom tom"), "tom tom", "images/tom.svg", "tomml", "drum"],
+    //.TRANS: musical instrument
+    [_("tom hi"), "tom hi", "images/tom.svg", "tomh", "drum"],
+    //.TRANS: musical instrument
+    [_("tom mid"), "tom mid", "images/tom.svg", "tomml", "drum"],
+    //.TRANS: musical instrument
+    [_("tom lo"), "tom lo", "images/floortom.svg", "tomfl", "drum"],
+    //.TRANS: musical instrument
+    [_("floor tom"), "floor tom", "images/floortom.svg", "tomfl", "drum"],
+    //.TRANS: a drum made from an inverted cup
+    [_("cup drum"), "cup drum", "images/cup.svg", "hh", "drum"],
+    //.TRANS: musical instrument
+    [_("darbuka drum"), "darbuka drum", "images/darbuka.svg", "hh", "drum"],
+    //.TRANS: musical instrument
+    [_("taiko"), "japanese drum", "images/tom.svg", "hh", "drum"],
+    //.TRANS: musical instrument
+    [_("hi hat"), "hi hat", "images/hihat.svg", "hh", "bell"],
+    //.TRANS: musical instrument
+    [_("cymbal closed"), "cymbal closed", "images/hihat.svg", "hh", "bell"],
+    //.TRANS: musical instrument
+    [_("cymbal open"), "cymbal open", "images/hihat.svg", "hh", "bell"],
+    //.TRANS: musical instrument
+    [_("cymbal pedal"), "cymbal pedal", "images/hihat.svg", "hh", "bell"],
+    //.TRANS: musical instrument
+    [_("finger cymbals"), "finger cymbals", "images/fingercymbals.svg", "cymca", "bell"],
+    //.TRANS: a small metal bell
+    [_("ride bell"), "ride bell", "images/ridebell.svg", "rb", "bell"],
+    //.TRANS: musical instrument
+    [_("cow bell"), "cow bell", "images/cowbell.svg", "cb", "bell"],
+    //.TRANS: musical instrument
+    [_("sonic cowbell"), "sonic cowbell", "images/cowbell.svg", "cb", "bell"],
+    //.TRANS: musical instrument
+    [_("triangle bell"), "triangle bell", "images/trianglebell.svg", "tri", "bell"],
+    //.TRANS: musical instrument
+    // [_('japanese bell'), 'japanese bell', 'images/cowbell.svg', 'hh', 'bell'],
+    //.TRANS: a musically tuned set of bells
+    [_("chime"), "chime", "images/chime.svg", "cymca", "bell"],
+    //.TRANS: a musical instrument
+    [_("gong"), "gong", "images/gong.svg", "cymca", "bell"],
+    //.TRANS: sound effect
+    [_("clang"), "clang", "images/clang.svg", "cymca", "effect"],
+    //.TRANS: sound effect
+    [_("crash"), "crash", "images/crash.svg", "cymca", "effect"],
+    //.TRANS: sound effect
+    [_("bottle"), "bottle", "images/bottle.svg", "hh", "effect"],
+    //.TRANS: sound effect
+    [_("clap"), "clap", "images/clap.svg", "hc", "effect"],
+    //.TRANS: sound effect
+    [_("slap"), "slap", "images/slap.svg", "vibs", "effect"],
+    //.TRANS: sound effect
+    [_("splash"), "splash", "images/splash.svg", "hh", "effect"],
+    //.TRANS: sound effect
+    [_("bubbles"), "bubbles", "images/bubbles.svg", "hh", "effect"],
+    //.TRANS: sound effect
+    [_("raindrop"), "raindrop", "images/bubbles.svg", "hh", "effect"],
+    //.TRANS: animal sound effect
+    [_("cat"), "cat", "images/cat.svg", "hh", "animal"],
+    //.TRANS: animal sound effect
+    [_("cricket"), "cricket", "images/cricket.svg", "hh", "animal"],
+    //.TRANS: animal sound effect
+    [_("dog"), "dog", "images/dog.svg", "hh", "animal"],
+    //.TRANS: animal sound effect
+    [_("duck"), "duck", "images/duck.svg", "hh", "animal"]
+];
+
+/**
+ * Array of names for various sound effect presets.
+ * @constant
+ * @type {Array<string>}
+ */
+const EFFECTSNAMES = ["duck", "dog", "cricket", "cat", "bubbles", "splash", "bottle"];
+
+/**
+ * Array of file paths for different sound samples.
+ * @constant
+ * @type {Array<string>}
+ */
+/**
+ * Object containing file paths and global variable names for different sound samples.
+ * @constant
+ * @type {Object}
+ */
+const SAMPLE_INFO = {
+    voice: {
+        "piano": { path: "samples/piano", global: "PIANO_SAMPLE" },
+        "violin": { path: "samples/violin", global: "VIOLIN_SAMPLE" },
+        "viola": { path: "samples/viola", global: "VIOLA_SAMPLE" },
+        "double bass": { path: "samples/doublebass", global: "DOUBLEBASS_SAMPLE" },
+        "cello": { path: "samples/cello", global: "CELLO_SAMPLE" },
+        "flute": { path: "samples/flute", global: "FLUTE_SAMPLE" },
+        "clarinet": { path: "samples/clarinet", global: "CLARINET_SAMPLE" },
+        "saxophone": { path: "samples/saxophone", global: "SAXOPHONE_SAMPLE" },
+        "trumpet": { path: "samples/trumpet", global: "TRUMPET_SAMPLE" },
+        "oboe": { path: "samples/oboe", global: "OBOE_SAMPLE" },
+        "trombone": { path: "samples/trombone", global: "TROMBONE_SAMPLE" },
+        "tuba": { path: "samples/tuba", global: "TUBA_SAMPLE" },
+        "guitar": { path: "samples/guitar", global: "GUITAR_SAMPLE" },
+        "acoustic guitar": { path: "samples/acguit", global: "ACOUSTIC_GUITAR_SAMPLE" },
+        "bass": { path: "samples/bass", global: "BASS_SAMPLE" },
+        "banjo": { path: "samples/banjo", global: "BANJO_SAMPLE" },
+        "koto": { path: "samples/koto", global: "KOTO_SAMPLE" },
+        "dulcimer": { path: "samples/dulcimer", global: "DULCIMER_SAMPLE" },
+        "electric guitar": { path: "samples/electricguitar", global: "ELECTRICGUITAR_SAMPLE" },
+        "bassoon": { path: "samples/bassoon", global: "BASSOON_SAMPLE" },
+        "celeste": { path: "samples/celeste", global: "CELESTE_SAMPLE" },
+        "vibraphone": { path: "samples/vibraphone", global: "VIBRAPHONE_SAMPLE" },
+        "xylophone": { path: "samples/xylophone", global: "XYLOPHONE_SAMPLE" },
+        "sitar": { path: "samples/sitar", global: "SITAR_SAMPLE" },
+        "harmonium": { path: "samples/harmonium", global: "HARMONIUM_SAMPLE" },
+        "mandolin": { path: "samples/mandolin", global: "MANDOLIN_SAMPLE" }
+    },
+    drum: {
+        "bottle": { path: "samples/bottle", global: "BOTTLE_SAMPLE" },
+        "clap": { path: "samples/clap", global: "CLAP_SAMPLE" },
+        "darbuka drum": { path: "samples/darbuka", global: "DARBUKA_SAMPLE" },
+        "hi hat": { path: "samples/hihat", global: "HIHAT_SAMPLE" },
+        "splash": { path: "samples/splash", global: "SPLASH_SAMPLE" },
+        "bubbles": { path: "samples/bubbles", global: "BUBBLES_SAMPLE" },
+        "raindrop": { path: "samples/raindrop", global: "RAINDROP_SAMPLE" },
+        "cow bell": { path: "samples/cowbell", global: "COWBELL_SAMPLE" },
+        "dog": { path: "samples/dog", global: "DOG_SAMPLE" },
+        "kick drum": { path: "samples/kick", global: "KICK_SAMPLE" },
+        "tom tom": { path: "samples/tom", global: "TOM_SAMPLE" },
+        "cat": { path: "samples/cat", global: "CAT_SAMPLE" },
+        "crash": { path: "samples/crash", global: "CRASH_SAMPLE" },
+        "duck": { path: "samples/duck", global: "DUCK_SAMPLE" },
+        "snare drum": { path: "samples/snare", global: "SNARE_SAMPLE" },
+        "snare hard": { path: "samples/snare_hard", global: "SNARE_HARD_SAMPLE" },
+        "snare soft": { path: "samples/snare_soft", global: "SNARE_SOFT_SAMPLE" },
+        "snare roll": { path: "samples/snare_roll", global: "SNARE_ROLL_SAMPLE" },
+        "heavy kick": { path: "samples/heavy_kick", global: "HEAVY_KICK_SAMPLE" },
+        "bass drum": { path: "samples/bassdrum", global: "BASSDRUM_SAMPLE" },
+        "tom hi": { path: "samples/tom_hi", global: "TOM_HI_SAMPLE" },
+        "tom mid": { path: "samples/tom_mid", global: "TOM_MID_SAMPLE" },
+        "tom lo": { path: "samples/tom_lo", global: "TOM_LO_SAMPLE" },
+        "floor tom": { path: "samples/floortom", global: "FLOORTOM_SAMPLE" },
+        "cup drum": { path: "samples/cup", global: "CUP_SAMPLE" },
+        "japanese drum": { path: "samples/japanese_drum", global: "JAPANESE_DRUM_SAMPLE" },
+        "finger cymbals": { path: "samples/fingercymbal", global: "FINGERCYMBAL_SAMPLE" },
+        "cymbal closed": { path: "samples/cymbal_closed", global: "CYMBAL_CLOSED_SAMPLE" },
+        "cymbal open": { path: "samples/cymbal_open", global: "CYMBAL_OPEN_SAMPLE" },
+        "cymbal pedal": { path: "samples/cymbal_pedal", global: "CYMBAL_PEDAL_SAMPLE" },
+        "ride bell": { path: "samples/ridebell", global: "RIDEBELL_SAMPLE" },
+        "sonic cowbell": { path: "samples/sonic_cowbell", global: "SONIC_COWBELL_SAMPLE" },
+        "triangle bell": { path: "samples/triangle", global: "TRIANGLE_SAMPLE" },
+        "chime": { path: "samples/chime", global: "CHIME_SAMPLE" },
+        "gong": { path: "samples/gong", global: "GONG_SAMPLE" },
+        "clang": { path: "samples/clang", global: "CLANG_SAMPLE" },
+        "slap": { path: "samples/slap", global: "SLAP_SAMPLE" },
+        "cricket": { path: "samples/cricket", global: "CRICKET_SAMPLE" }
+    }
+};
+
+/**
+ * Array of file paths for different sound samples.
+ * @constant
+ * @type {Array<string>}
+ */
+const SOUNDSAMPLESDEFINES = Object.values(SAMPLE_INFO.voice)
+    .map(s => s.path)
+    .concat(Object.values(SAMPLE_INFO.drum).map(s => s.path));
+
+// Some samples have a default volume other than 50 (See #1697)
+/**
+ * Default volume settings for different synth instruments.
+ * @constant
+ * @type {Object.<string, number>}
+ */
+const DEFAULTSYNTHVOLUME = {
+    "flute": 90,
+    "electronic synth": 90,
+    "piano": 100,
+    "viola": 20,
+    "violin": 20,
+    "banjo": 90,
+    "koto": 70,
+    "kick drum": 100,
+    "tom tom": 100,
+    "floor tom": 100,
+    "bass drum": 100,
+    "cup drum": 100,
+    "darbuka drum": 100,
+    "hi hat": 100,
+    "ride bell": 100,
+    "cow bell": 100,
+    "triangle bell": 60,
+    "finger cymbals": 70,
+    "chime": 90,
+    "gong": 70,
+    "clang": 70,
+    "crash": 90,
+    "clap": 90,
+    "slap": 60,
+    "vibraphone": 100,
+    "xylophone": 100,
+    "japanese drum": 90,
+    "sitar": 100,
+    "harmonium": 100,
+    "mandolin": 100,
+    "heavy kick": 100,
+    "snare hard": 100,
+    "snare soft": 100,
+    "snare roll": 100,
+    "tom hi": 100,
+    "tom mid": 100,
+    "tom lo": 100,
+    "cymbal closed": 100,
+    "cymbal open": 90,
+    "cymbal pedal": 90,
+    "sonic cowbell": 100
+};
+
+/**
+ * The sample has a pitch which is subsequently transposed.
+ * This object defines the starting pitch number for different samples.
+ * @constant
+ * @type {Object.<string, [string, number]>}
+ */
+const SAMPLECENTERNO = {
+    "piano": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "violin": ["C5", 51], // pitchToNumber('C', 5, 'C Major')],
+    "cello": ["C3", 27], // pitchToNumber('C', 3, 'C Major')],
+    "bass": ["C3", 27], // pitchToNumber('C', 2, 'C Major')],
+    "guitar": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "acoustic guitar": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "flute": ["F#5", 57], // pitchToNumber('F#', 57, 'C Major')],
+    "saxophone": ["C5", 51], // pitchToNumber('C', 5, 'C Major')],
+    "clarinet": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "tuba": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "trumpet": ["C3", 27], // pitchToNumber('C', 3, 'C Major')],
+    "oboe": ["C4", 39], // pitchToNumber('C', 3, 'C Major')],
+    "trombone": ["C3", 27], // pitchToNumber('C', 3, 'C Major')],
+    "banjo": ["C6", 63], // pitchToNumber('C', 6, 'C Major')],
+    "koto": ["C5", 51], // pitchToNumber('C', 5, 'C Major')],
+    "dulcimer": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "electric guitar": ["C3", 27], // pitchToNumber('C', 3, 'C Major')],
+    "bassoon": ["D4", 41], // pitchToNumber('D', 4, 'D Major')],
+    "celeste": ["C3", 27], // pitchToNumber('C', 3, 'C Major')],
+    "vibraphone": ["C5", 51], // pitchToNumber('C', 5, 'C Major')],
+    "xylophone": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "viola": ["D4", 53], // pitchToNumber('D', 4, 'D Major')],
+    "double bass": ["C4", 39], // pitchToNumber('C', 4, 'C Major')],
+    "sitar": ["C4", 39], // pitchToNumber('C', 4, 'C Major')]
+    "harmonium": ["C4", 39] // pitchToNumber('C', 4, 'C Major')]
+};
+
+/**
+ * The sample has multiple pitch which is subsequently transposed.
+ * This object defines the starting pitch for different samples.
+ * @constant
+ * @type {Object.<string, Array<string>>}
+ */
+const MULTIPITCH = {
+    mandolin: ["A4", "A5", "A6"]
+};
+
+/**
+ * Array to store custom samples.
+ * @constant
+ * @type {Array}
+ */
+const CUSTOMSAMPLES = [];
+
+/**
+ * Array of percussion instruments.
+ * @constant
+ * @type {Array<string>}
+ */
+const percussionInstruments = ["koto", "banjo", "dulcimer", "xylophone", "celeste"];
+
+/**
+ * Array of string instruments.
+ * @constant
+ * @type {Array<string>}
+ */
+const stringInstruments = [
+    "piano",
+    "harmonium",
+    "sitar",
+    "guitar",
+    "acoustic guitar",
+    "electric guitar"
+];
+/**
+ * Validates and sets parameters for an instrument.
+ * @function
+ * @param {Object} defaultParams - The default parameters for the instrument.
+ * @param {Object} params - The parameters to be set for the instrument.
+ * @returns {Object} - The validated and set parameters.
+ */
+const validateAndSetParams = (defaultParams, params) => {
+    if (defaultParams && defaultParams !== null && params && params !== undefined) {
+        for (const key in defaultParams) {
+            if (key in params && params[key] !== undefined) defaultParams[key] = params[key];
+        }
+    }
+
+    return defaultParams;
+};
+
+// This object contains mapping between instrument name and
+// corresponding synth object.  The instrument name is the one that
+// the user sets in the "Timbre" clamp and uses in the "Set Timbre"
+// clamp; There is one instrument dictionary per turtle.
+/**
+ * Object containing mapping between turtle ID and instrument dictionaries.
+ * @type {Object.<number, Object>}
+ */
+const instruments = { 0: {} };
+
+/**
+ * Object containing mapping between instrument name and its source.
+ * @type {Object.<string, [number, string]>}
+ * e.g. instrumentsSource['kick drum'] = [1, 'kick drum']
+ */
+const instrumentsSource = {};
+
+// Tracks how many _performNotes graph-rewire calls are in-flight per synth instance.
+// Used to prevent the cleanup callback from restoring the dry path while another
+// effects chain is still active on the same synth.
+const _effectsInFlight = new WeakMap();
+
+// The output each synth should play into, as last set by routeInstrument().
+const _routedOutput = new WeakMap();
+
+/**
+ * Object containing effects associated with instruments in the timbre widget.
+ * @type {Object.<number, Object>}
+ */
+const instrumentsEffects = { 0: {} };
+
+/**
+ * Object containing filters associated with instruments in the timbre widget.
+ * @type {Object.<number, Object>}
+ */
+const instrumentsFilters = { 0: {} };
+
+/**
+ * Transport wrapper — isolates Tone.Transport behind a stable interface.
+ * All timing/scheduling operations should go through this object so that
+ * Tone.js remains a swappable implementation detail of synthutils.js.
+ */
+const transport = {
+    get isAvailable() {
+        return typeof Tone !== "undefined" && Tone.Transport;
+    },
+    get isClockRunning() {
+        return (
+            this.isAvailable &&
+            typeof Tone.context !== "undefined" &&
+            Tone.context.state === "running" &&
+            Tone.Transport.state === "started"
+        );
+    },
+    start() {
+        if (this.isAvailable) Tone.Transport.start();
+    },
+    stop() {
+        if (this.isAvailable) Tone.Transport.stop();
+    },
+    cancel() {
+        if (this.isAvailable && typeof Tone.Transport.cancel === "function") {
+            Tone.Transport.cancel();
+        }
+    },
+    clear(id) {
+        if (this.isAvailable && typeof Tone.Transport.clear === "function") {
+            Tone.Transport.clear(id);
+        }
+    },
+    schedule(callback, time) {
+        if (this.isAvailable && typeof Tone.Transport.schedule === "function") {
+            return Tone.Transport.schedule(callback, time);
+        }
+        return null;
+    },
+    get seconds() {
+        if (this.isAvailable) return Tone.Transport.seconds;
+        return 0;
+    },
+    set seconds(v) {
+        if (this.isAvailable) Tone.Transport.seconds = v;
+    },
+    getSecondsAtTime(time) {
+        if (this.isAvailable && typeof Tone.Transport.getSecondsAtTime === "function") {
+            return Tone.Transport.getSecondsAtTime(time);
+        }
+        return this.seconds;
+    }
+};
+
+/**
+ * Class responsible for loading and managing audio samples (Tone.js samplers).
+ */
+class SampleLoader {
+    constructor() {
+        this.samples = null;
+        // Loads still in flight, by sample name, so concurrent callers share one.
+        this._pendingLoads = {};
+    }
+
+    initStructures() {
+        if (this.samples === null) {
+            this.samples = { voice: {}, drum: {} };
+            // Pre-populate with null to indicate they exist as valid instruments but are not loaded
+            for (const type in SAMPLE_INFO) {
+                for (const name in SAMPLE_INFO[type]) {
+                    this.samples[type][name] = null;
+                }
+            }
+            this.samples.voice["empty"] = () => null;
+        }
+    }
+
+    loadSampleAsync(sampleName) {
+        this.initStructures();
+        if (this._pendingLoads[sampleName]) {
+            return this._pendingLoads[sampleName];
+        }
+
+        const promise = new Promise((resolve, reject) => {
+            let found = false;
+            let sampleType = null;
+            let sampleInfo = null;
+
+            // Find the sample info
+            for (const type in SAMPLE_INFO) {
+                if (SAMPLE_INFO[type][sampleName]) {
+                    sampleType = type;
+                    sampleInfo = SAMPLE_INFO[type][sampleName];
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                // If not found in SAMPLE_INFO, it might be a built-in or custom synth, so we resolve immediately
+                resolve();
+                return;
+            }
+
+            if (this.samples[sampleType][sampleName] !== null) {
+                // Already loaded
+                resolve();
+                return;
+            }
+
+            // Load the sample module using require
+            requirejs(
+                [sampleInfo.path],
+                () => {
+                    try {
+                        const sampleData = window[sampleInfo.global];
+                        if (sampleData) {
+                            this.samples[sampleType][sampleName] = sampleData();
+                            resolve();
+                        } else {
+                            console.error(
+                                `Global variable ${sampleInfo.global} not found for sample ${sampleName}`
+                            );
+                            reject(`Sample global not found: ${sampleName}`);
+                        }
+                    } catch (e) {
+                        console.error(`Error processing sample ${sampleName}:`, e);
+                        reject(e);
+                    }
+                },
+                err => {
+                    console.error(`Failed to load sample module for ${sampleName}:`, err);
+                    reject(err);
+                }
+            );
+        });
+
+        this._pendingLoads[sampleName] = promise;
+        const settle = () => {
+            if (this._pendingLoads[sampleName] === promise) {
+                delete this._pendingLoads[sampleName];
+            }
+        };
+        promise.then(settle, settle);
+        return promise;
+    }
+
+    async preloadProject(blockList) {
+        if (!blockList || !Array.isArray(blockList)) {
+            return;
+        }
+
+        const instrumentsToLoad = new Set();
+
+        // Known instrument block names
+        const instrumentBlockNames = ["settimbre", "setinstrument", "timbre", "instrument"];
+
+        // Scan blocks for instrument references
+        for (const block of blockList) {
+            if (!Array.isArray(block) || block.length < 2) continue;
+
+            const blockName = block[1];
+
+            // Check if this is an instrument-setting block
+            if (instrumentBlockNames.includes(blockName)) {
+                // The instrument name is usually in a connected block
+                // Check the connections for potential instrument names
+                const connections = block[4];
+                if (Array.isArray(connections)) {
+                    for (const connIdx of connections) {
+                        if (connIdx !== null && blockList[connIdx]) {
+                            const connBlock = blockList[connIdx];
+                            // Check if it's a text/value block with an instrument name
+                            if (Array.isArray(connBlock) && connBlock.length > 1) {
+                                const value = connBlock[1];
+                                // Check if this value is a known instrument
+                                if (typeof value === "string") {
+                                    // Check voice samples
+                                    if (SAMPLE_INFO.voice && SAMPLE_INFO.voice[value]) {
+                                        instrumentsToLoad.add(value);
+                                    }
+                                    // Check drum samples
+                                    if (SAMPLE_INFO.drum && SAMPLE_INFO.drum[value]) {
+                                        instrumentsToLoad.add(value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Also check if the block name itself is an instrument
+            if (typeof blockName === "string") {
+                if (SAMPLE_INFO.voice && SAMPLE_INFO.voice[blockName]) {
+                    instrumentsToLoad.add(blockName);
+                }
+                if (SAMPLE_INFO.drum && SAMPLE_INFO.drum[blockName]) {
+                    instrumentsToLoad.add(blockName);
+                }
+            }
+        }
+
+        // Preload all found instruments in parallel
+        if (instrumentsToLoad.size > 0) {
+            console.debug(
+                `Preloading ${instrumentsToLoad.size} instruments:`,
+                Array.from(instrumentsToLoad)
+            );
+            const loadPromises = Array.from(instrumentsToLoad).map(name =>
+                this.loadSampleAsync(name).catch(err => {
+                    console.warn(`Failed to preload sample ${name}:`, err);
+                })
+            );
+            await Promise.all(loadPromises);
+            console.debug("Project samples preloaded successfully");
+        }
+    }
+}
+
+/**
+ * Encodes decoded audio as a 16-bit PCM WAV file. Browsers can't record WAV
+ * directly (MediaRecorder gives WebM or Ogg), so "Save as WAV" records in the
+ * browser's own format, decodes it, and writes the samples out with this.
+ * @param {AudioBuffer} audioBuffer - Decoded audio (numberOfChannels, length,
+ *     sampleRate, getChannelData).
+ * @returns {ArrayBuffer} The bytes of the WAV file.
+ */
+function audioBufferToWav(audioBuffer) {
+    const channels = audioBuffer.numberOfChannels;
+    const frames = audioBuffer.length;
+    const sampleRate = audioBuffer.sampleRate;
+    const dataSize = frames * channels * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+    const writeString = (offset, text) => {
+        for (let i = 0; i < text.length; i++) {
+            view.setUint8(offset + i, text.charCodeAt(i));
+        }
+    };
+
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true); // fmt chunk size
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, channels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * channels * 2, true); // byte rate
+    view.setUint16(32, channels * 2, true); // block align
+    view.setUint16(34, 16, true); // bits per sample
+    writeString(36, "data");
+    view.setUint32(40, dataSize, true);
+
+    const channelData = [];
+    for (let c = 0; c < channels; c++) {
+        channelData.push(audioBuffer.getChannelData(c));
+    }
+    let offset = 44;
+    for (let i = 0; i < frames; i++) {
+        for (let c = 0; c < channels; c++) {
+            const sample = Math.max(-1, Math.min(1, channelData[c][i]));
+            view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+            offset += 2;
+        }
+    }
+    return buffer;
+}
+
+/**
+ * Calculates the calibrated volume in decibels for a given instrument and volume level.
+ * As per #1697, adjusts the volume for instruments defined in DEFAULTSYNTHVOLUME.
+ * @param {string} instrumentName - The name of the instrument.
+ * @param {number} volume - The volume level (0 to 100).
+ * @param {Function} [resolveFn] - Optional resolver function for instrument names.
+ * @returns {number} The volume level in decibels.
+ */
+function calculateInstrumentVolumeDb(instrumentName, volume, resolveFn) {
+    if (typeof resolveFn === "function") {
+        instrumentName = resolveFn(instrumentName);
+    }
+    // guard invalid UI/programmatic input (audio boundary safety)
+    volume = clampNumber(volume, 0, 100);
+
+    let nv;
+    if (Object.hasOwn(DEFAULTSYNTHVOLUME, instrumentName)) {
+        const sv = DEFAULTSYNTHVOLUME[instrumentName];
+        if (volume > 50) {
+            const d = 100 - sv;
+            nv = ((volume - 50) / 50) * d + sv;
+        } else {
+            nv = (volume / 50) * sv;
+        }
+    } else {
+        nv = volume;
+    }
+
+    const gain = Math.max(0.0001, nv / 100);
+    return Tone.gainToDb(gain);
+}
+
+/**
+ * Synth constructor function.
+ * @constructor
+ */
+function Synth() {
+    // Isolate synth functions here.
+    /**
+     * Built-in synth types.
+     * @type {Object.<string, number>}
+     */
+    const BUILTIN_SYNTHS = {
+        "sine": 1,
+        "triangle": 1,
+        "sawtooth": 1,
+        "square": 1,
+        "pluck": 1,
+        "noise1": 1,
+        "noise2": 1,
+        "noise3": 1,
+        "poly": 1,
+        "simple 1": 1,
+        "simple 2": 1,
+        "simple 3": 1,
+        "simple 4": 1,
+        "custom": 1
+    };
+    /**
+     * Custom synth types.
+     * @type {Object.<string, number>}
+     */
+    const CUSTOM_SYNTHS = {
+        amsynth: 1,
+        fmsynth: 1,
+        duosynth: 1
+    };
+
+    // Using Tone.js
+    // this.tone = new Tone();
+    this.tone = null;
+    this.transport = transport;
+
+    // Expose the audio-context unlock so the play button can call it while
+    // the browser still considers the click a user gesture.
+    this.startAudio = () => {
+        if (Tone.context.state !== "running") {
+            return Tone.start();
+        }
+        return Promise.resolve();
+    };
+
+    Tone.Buffer.onload = () => {
+        console.debug("sample loaded");
+    };
+
+    /**
+     * The loader responsible for initializing and fetching sample synths.
+     * @type {SampleLoader}
+     */
+    this.sampleLoader = new SampleLoader();
+
+    // Define a getter/setter for backward compatibility with Synth instance state
+    Object.defineProperty(this, "samples", {
+        get: () => this.sampleLoader.samples,
+        set: val => {
+            this.sampleLoader.samples = val;
+        }
+    });
+
+    /**
+     * Suffix for sample names.
+     * @type {string}
+     */
+    this.samplesuffix = "_SAMPLE";
+    /**
+     * Manifest for sample loading.
+     * @type {Object}
+     */
+    this.samplesManifest = null;
+    /**
+     * Flag to track changes in temperament.
+     * @type {boolean}
+     */
+    this.changeInTemperament = false;
+    /**
+     * Current temperament.
+     * @type {string}
+     */
+    this.inTemperament = "equal";
+    /**
+     * Starting pitch note.
+     * @type {string}
+     */
+    this.startingPitch = "C4";
+    /**
+     * Frequencies of notes in the current temperament.
+     * @type {Object.<string, [number, number]>}
+     */
+    this.noteFrequencies = {};
+    /**
+     * Function to initialize a new Tone.js instance.
+     * @function
+     */
+    this.newTone = () => {
+        this.tone = Tone;
+    };
+
+    /**
+     * Function to get the current temperament.
+     * @function
+     * @returns {string} - The current temperament.
+     */
+    this.whichTemperament = () => {
+        return this.inTemperament;
+    };
+    /**
+     * Function to handle temperament changes.
+     * @function
+     * @param {string} temperament - The new temperament.
+     * @param {string} startingPitch - The starting pitch note.
+     */
+    this.temperamentChanged = (temperament, startingPitch) => {
+        let startPitch = startingPitch;
+        const t = getTemperament(temperament);
+        if (!t) {
+            console.error("Temperament not found: " + temperament);
+            return;
+        }
+        const parsed = parseNoteString(startPitch);
+        const number = pitchToNumber(parsed[0], parsed[1], "C major");
+        const startPitchObj = numberToPitch(number);
+        startPitch = (startPitchObj[0] + startPitchObj[1]).toString();
+
+        if (
+            startPitch.substring(1, startPitch.length - 1) === FLAT ||
+            startPitch.substring(1, startPitch.length - 1) === "b"
+        ) {
+            startPitch = startPitch.replace(FLAT, "b");
+        } else if (
+            startPitch.substring(1, startPitch.length - 1) === SHARP ||
+            startPitch.substring(1, startPitch.length - 1) === "#"
+        ) {
+            startPitch = startPitch.replace(SHARP, "#");
+        }
+
+        let frequency;
+        if (t && !t.isEDO && t.noteLabels && t.ratios) {
+            // For JI/Pythagorean: compute from A0 reference, not 12-EDO Tone.Frequency
+            const startParsed = parseNoteString(startingPitch);
+            frequency = pitchToFrequency(startParsed[0], startParsed[1], 0, "C major", temperament);
+        } else if (
+            (t && Number.isFinite(Number(t.octaveRatio)) && Number(t.octaveRatio) !== 2) ||
+            (typeof getOctaveRatio === "function" && getOctaveRatio() !== 2)
+        ) {
+            // Non-octave or stretched period: compute via pitchToFrequency to honor powerBase
+            const startParsed = parseNoteString(startingPitch);
+            frequency = pitchToFrequency(startParsed[0], startParsed[1], 0, "C major", temperament);
+        } else {
+            frequency = Tone.Frequency(startPitch).toFrequency();
+        }
+
+        const startParsed = parseNoteString(startingPitch);
+        this.noteFrequencies = {
+            // note: [octave, Frequency]
+            [startParsed[0]]: [startParsed[1], frequency]
+        };
+
+        // EDO temperaments compute frequencies via pitchToFrequency directly
+        // and never use noteFrequencies, so skip building the table.
+        // This also avoids crashing on microtonal interval names (e.g. "mid 2")
+        // that exist in the temperament definition but not in INTERVALVALUES.
+        if (t && (t.isEDO || isEquallyTempered(temperament))) {
+            this.changeInTemperament = false;
+            return;
+        }
+
+        for (const interval in t) {
+            if (
+                interval !== "pitchNumber" &&
+                interval !== "interval" &&
+                interval !== "octave" &&
+                interval !== "isEDO" &&
+                interval !== "edo" &&
+                interval !== "name" &&
+                interval !== "description" &&
+                interval !== "noteLabels" &&
+                interval !== "ratios" &&
+                interval !== "octaveRatio" &&
+                interval !== "generator"
+            ) {
+                let noteInfo;
+                let ratio;
+                if (!isNaN(interval)) {
+                    const val = t[interval];
+                    if (Array.isArray(val) && val.length >= 3) {
+                        noteInfo = [val[1], val[2]];
+                        ratio = val[0];
+                    } else {
+                        continue;
+                    }
+                } else if (typeof t[interval] === "number") {
+                    noteInfo = getNoteFromInterval(startingPitch, interval);
+                    ratio = t[interval];
+                } else if (
+                    t[interval] &&
+                    typeof t[interval] === "object" &&
+                    typeof t[interval].ratio === "number"
+                ) {
+                    noteInfo = getNoteFromInterval(startingPitch, interval);
+                    ratio = t[interval].ratio;
+                } else {
+                    continue;
+                }
+                this.noteFrequencies[noteInfo[0]] = [noteInfo[1], ratio * frequency];
+            }
+        }
+
+        for (const key in this.noteFrequencies) {
+            let note;
+            if (key.substring(1, key.length) === FLAT || key.substring(1, key.length) === "b") {
+                note = key.substring(0, 1) + "" + "b";
+                this.noteFrequencies[note] = this.noteFrequencies[key];
+
+                delete this.noteFrequencies[key];
+            } else if (
+                key.substring(1, key.length) === SHARP ||
+                key.substring(1, key.length) === "#"
+            ) {
+                note = key.substring(0, 1) + "" + "#";
+                this.noteFrequencies[note] = this.noteFrequencies[key];
+
+                delete this.noteFrequencies[key];
+            }
+        }
+
+        this.changeInTemperament = false;
+    };
+    /**
+     * Function to get the frequency of notes.
+     * @function
+     * @param {string|number|string[]} notes - The notes to get frequencies for.
+     * @param {boolean} changeInTemperament - Whether there is a change in temperament.
+     * @returns {number|number[]} - The frequency or frequencies.
+     */
+    this.getFrequency = (notes, changeInTemperament) => {
+        return this._getFrequency(notes, changeInTemperament);
+    };
+    /**
+     * Internal function to get the frequency of notes.
+     * @function
+     * @param {string|number|string[]} notes - The notes to get frequencies for.
+     * @param {boolean} changeInTemperament - Whether there is a change in temperament.
+     * @param {string} temperament - The temperament to use.
+     * @returns {number|number[]} - The frequency or frequencies.
+     * @private
+     */
+    this._getFrequency = (notes, changeInTemperament, temperament) => {
+        if (changeInTemperament) {
+            if (temperament === undefined) {
+                this.temperamentChanged(this.inTemperament, this.startingPitch);
+            } else {
+                //To get frequencies in Temperament Widget.
+                this.temperamentChanged(temperament, this.startingPitch);
+            }
+            Singer.clearPitchToFrequencyCache();
+        }
+
+        if (this.inTemperament === "equal") {
+            if (typeof notes === "string") {
+                const parsed = parseNoteString(notes);
+                return pitchToFrequency(parsed[0], parsed[1], 0, "c major");
+            } else if (typeof notes === "number") {
+                return notes;
+            } else {
+                const results = [];
+                for (let i = 0; i < notes.length; i++) {
+                    if (typeof notes[i] === "string") {
+                        const parsed = parseNoteString(notes[i]);
+                        results.push(pitchToFrequency(parsed[0], parsed[1], 0, "c major"));
+                    } else {
+                        results.push(notes[i]);
+                    }
+                }
+                return results;
+            }
+        }
+
+        const t = getTemperament(this.inTemperament);
+        if (t && (t.isEDO || isEquallyTempered(this.inTemperament))) {
+            if (typeof notes === "string") {
+                const parsed = parseNoteString(notes);
+                return pitchToFrequency(parsed[0], parsed[1], 0, "c major", this.inTemperament);
+            } else if (typeof notes === "number") {
+                return notes;
+            } else {
+                const results = [];
+                for (let i = 0; i < notes.length; i++) {
+                    if (typeof notes[i] === "string") {
+                        const parsed = parseNoteString(notes[i]);
+                        results.push(
+                            pitchToFrequency(parsed[0], parsed[1], 0, "c major", this.inTemperament)
+                        );
+                    } else {
+                        results.push(notes[i]);
+                    }
+                }
+                return results;
+            }
+        }
+
+        const __getFrequency = oneNote => {
+            const parsed = parseNoteString(oneNote);
+            const noteName = normalizeNoteAccidentals(parsed[0]);
+            const octave = parsed[1];
+
+            for (const note in this.noteFrequencies) {
+                if (note === noteName) {
+                    if (this.noteFrequencies[note][0] === octave) {
+                        //Note to be played is in the same octave.
+                        return this.noteFrequencies[note][1];
+                    } else {
+                        //Note to be played is not in the same octave.
+                        const power = octave - this.noteFrequencies[note][0];
+                        const ratio =
+                            typeof getEffectiveOctaveRatio === "function"
+                                ? getEffectiveOctaveRatio(this.inTemperament)
+                                : getOctaveRatio();
+                        return this.noteFrequencies[note][1] * Math.pow(ratio, power);
+                    }
+                }
+            }
+        };
+
+        if (typeof notes === "string") {
+            return __getFrequency(notes);
+        } else if (typeof notes === "object") {
+            const results = [];
+            for (let i = 0; i < notes.length; i++) {
+                if (typeof notes[i] === "string") {
+                    results.push(__getFrequency(notes[i]));
+                } else {
+                    // Hertz?
+                    results.push(notes[i]);
+                }
+            }
+
+            return results;
+        } else {
+            // Hertz?
+            return notes;
+        }
+    };
+    /**
+     * Function to get custom frequency for notes.
+     * @function
+     * @param {string|number|string[]} notes - The notes to get frequencies for.
+     * @param {string} customID - The custom temperament ID.
+     * @returns {number|number[]} - The frequency or frequencies.
+     */
+    this.getCustomFrequency = (notes, customID) => {
+        const _stripCents = n => (typeof n === "string" ? n.replace(/\(.*\)/, "") : n);
+        const __getCustomFrequency = (oneNote, startingPitch) => {
+            const parsed = parseNoteString(oneNote);
+            const octave = parsed[1];
+            oneNote = getCustomNote(parsed[0]);
+            const pitch = startingPitch;
+            const pitchParsed = parseNoteString(pitch);
+            const startPitchFrequency = pitchToFrequency(
+                pitchParsed[0],
+                pitchParsed[1],
+                0,
+                "C Major"
+            );
+            if (typeof oneNote !== "number") {
+                const thisTemperament = getTemperament(customID);
+                const target = _stripCents(oneNote);
+                for (const pitchNumber in thisTemperament) {
+                    if (pitchNumber !== "pitchNumber") {
+                        const n3 = thisTemperament[pitchNumber][3];
+                        const n1 = thisTemperament[pitchNumber][1];
+                        if (
+                            (isCustomTemperament(customID) && target === _stripCents(n3)) ||
+                            target === _stripCents(n1)
+                        ) {
+                            const octaveDiff = octave - thisTemperament[pitchNumber][2];
+                            const ratio =
+                                typeof getEffectiveOctaveRatio === "function"
+                                    ? getEffectiveOctaveRatio(thisTemperament || customID)
+                                    : getOctaveRatio();
+                            return Number(
+                                thisTemperament[pitchNumber][0] *
+                                    startPitchFrequency *
+                                    Math.pow(ratio, octaveDiff)
+                            );
+                        }
+                    }
+                }
+            }
+            return oneNote;
+        };
+
+        if (typeof notes === "string") {
+            return __getCustomFrequency(notes, this.startingPitch);
+        } else if (typeof notes === "object") {
+            const results = [];
+            for (let i = 0; i < notes.length; i++) {
+                if (typeof notes[i] === "string") {
+                    results.push(__getCustomFrequency(notes[i], this.startingPitch));
+                } else {
+                    // Hertz?
+                    results.push(notes[i]);
+                }
+            }
+            return results;
+        } else {
+            // Hertz?
+            return notes;
+        }
+    };
+
+    /**
+     * Function to resume the Tone.js context.
+     * @function
+     */
+    this.resume = () => {
+        if (this.tone === null) {
+            this.newTone();
+        }
+
+        this.tone.context.resume();
+    };
+
+    /**
+     * Function to load samples.
+     * @function
+     */
+    this.loadSamples = () => {
+        this.sampleLoader.initStructures();
+    };
+
+    /**
+     * Loads a specific sample into the Synth instance asynchronously.
+     * @function
+     * @memberof Synth
+     * @param {string} sampleName - The name of the sample to load.
+     * @returns {Promise<void>} - A promise that resolves when the sample is loaded.
+     */
+    this._loadSample = sampleName => {
+        return this.sampleLoader.loadSampleAsync(sampleName);
+    };
+
+    /**
+     * Preloads samples used in a project by scanning blocks for instrument names.
+     * This should be called when a project is loaded to avoid playback delays.
+     * @function
+     * @memberof Synth
+     * @param {Array} blockList - The list of blocks from the project.
+     * @returns {Promise<void>} - A promise that resolves when all samples are preloaded.
+     */
+    this.preloadProjectSamples = async blockList => {
+        return await this.sampleLoader.preloadProject(blockList);
+    };
+
+    /**
+     * Array to store samples that need to be loaded at start.
+     * @type {Array}
+     * @memberof Synth
+     */
+    this.samplesQueue = []; // Samples that need to be loaded at start.
+
+    // Removed eager loading of all samples
+    this.loadSamples(); // Just initialize the structure
+    /*
+    require(SOUNDSAMPLESDEFINES, () => {
+        this.loadSamples();
+ 
+        for (let i = 0; i < this.samplesQueue.length; i++) {
+            this.__createSynth(
+                0,
+                this.samplesQueue[i][0],
+                this.samplesQueue[i][1],
+                this.samplesQueue[i][2]
+            );
+        }
+    });
+    */
+
+    /**
+     * Sets up the recorder for the Synth instance.
+     * @function
+     * @memberof Synth
+     */
+    this.setupRecorder = () => {
+        const cont = Tone.getContext();
+        const dest = cont.createMediaStreamDestination();
+        let chunks = [];
+        const stream = dest.stream;
+        // Browsers can't record WAV, so record in their own format (WebM in
+        // Chrome, Ogg in Firefox) and convert to WAV when recording stops.
+        const recorder = new MediaRecorder(stream);
+        this.recorder = recorder;
+        for (const tur in instruments) {
+            for (const synth in instruments[tur]) {
+                instruments[tur][synth].connect(dest);
+            }
+        }
+        this.recorder.ondataavailable = evt => {
+            // console.debug(evt.data);
+            if (typeof evt.data === "undefined" || evt.data.size === 0) return;
+            chunks.push(evt.data);
+        };
+        const download = (uri, name) => {
+            const link = document.createElement("a");
+            link.download = name;
+            link.href = uri;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+        this.recorder.onstop = async () => {
+            if (!chunks.length) return;
+            // Firefox clears recorder.mimeType on stop, so take the type from the data.
+            const type = chunks[0].type || recorder.mimeType || "";
+            const recorded = new Blob(chunks, { type });
+            chunks = [];
+            let blob;
+            let ext;
+            try {
+                const audioBuffer = await cont.decodeAudioData(await recorded.arrayBuffer());
+                blob = new Blob([audioBufferToWav(audioBuffer)], { type: "audio/wav" });
+                ext = ".wav";
+            } catch (e) {
+                // Couldn't convert, so save what was recorded, named by its real format.
+                console.debug("Could not convert the recording to WAV:", e);
+                blob = recorded;
+                const mime = type.toLowerCase();
+                if (mime.includes("ogg")) {
+                    ext = ".ogg";
+                } else if (mime.includes("mp4")) {
+                    // Safari records mp4 (aac).
+                    ext = ".m4a";
+                } else {
+                    ext = ".webm";
+                }
+            }
+            const url = URL.createObjectURL(blob);
+            const t = text => (typeof window._ === "function" ? window._(text) : text);
+            const showCancelMessage = () => {
+                if (window.MBDialog && typeof window.MBDialog.alert === "function") {
+                    window.MBDialog.alert(t("Download cancelled."), t("Save recording"));
+                } else {
+                    alert(t("Download cancelled."));
+                }
+            };
+            const finishDownload = name => {
+                if (name === null || name.trim() === "") {
+                    URL.revokeObjectURL(url);
+                    showCancelMessage();
+                    return;
+                }
+
+                download(url, name + ext);
+                URL.revokeObjectURL(url);
+            };
+
+            if (window.MBDialog && typeof window.MBDialog.prompt === "function") {
+                window.MBDialog.prompt({
+                    title: t("Save recording"),
+                    message: t("Filename:"),
+                    defaultValue: t("recording"),
+                    okText: t("Save"),
+                    cancelText: t("Cancel")
+                }).then(result => finishDownload(result));
+            } else {
+                // Fallback to browser prompt if MBDialog is not available.
+                const fileName = window.prompt(t("Enter file name"), t("recording"));
+                finishDownload(fileName);
+            }
+        };
+        // this.recorder.start();
+        // setTimeout(()=>{this.recorder.stop();},5000);
+    };
+
+    /**
+     * Retrieves default parameter values for various synthesizers.
+     * @function
+     * @memberof Synth
+     * @param {string} sourceName - The name of the synthesizer.
+     * @returns {Object} - Default parameter values for the specified synthesizer.
+     */
+    this.getDefaultParamValues = sourceName => {
+        // sourceName may need to be 'untranslated'
+        let sourceNameLC = sourceName.toLowerCase();
+        if (getOscillatorTypes(sourceNameLC) !== null) {
+            sourceNameLC = getOscillatorTypes(sourceNameLC);
+        }
+
+        let synthOptions;
+        switch (sourceNameLC) {
+            case "amsynth":
+                synthOptions = {
+                    harmonicity: 1,
+                    detune: 0,
+                    envelope: {
+                        attack: 0.01,
+                        decay: 0.01,
+                        sustain: 1,
+                        release: 0.5
+                    },
+                    modulation: {
+                        type: "square"
+                    },
+                    modulationEnvelope: {
+                        attack: 0.5,
+                        decay: 0.001,
+                        sustain: 1,
+                        release: 0.5
+                    }
+                };
+                break;
+            case "fmsynth":
+                synthOptions = {
+                    harmonicity: 1,
+                    modulationIndex: 10,
+                    detune: 0,
+                    envelope: {
+                        attack: 0.01,
+                        decay: 0.01,
+                        sustain: 1,
+                        release: 0.5
+                    },
+                    modulation: {
+                        type: "square"
+                    },
+                    modulationEnvelope: {
+                        attack: 0.5,
+                        decay: 0.001,
+                        sustain: 1,
+                        release: 0.5
+                    }
+                };
+                break;
+            case "noise1":
+                synthOptions = {
+                    noise: {
+                        type: "white"
+                    },
+                    envelope: {
+                        attack: 0.005,
+                        decay: 0.1,
+                        sustain: 1
+                    }
+                };
+                break;
+            case "noise2":
+                synthOptions = {
+                    noise: {
+                        type: "brown"
+                    },
+                    envelope: {
+                        attack: 0.005,
+                        decay: 0.1,
+                        sustain: 1
+                    }
+                };
+                break;
+            case "noise3":
+                synthOptions = {
+                    noise: {
+                        type: "pink"
+                    },
+                    envelope: {
+                        attack: 0.005,
+                        decay: 0.1,
+                        sustain: 1
+                    }
+                };
+                break;
+            case "simple 1":
+            case "simple 2":
+            case "simple 3":
+            case "simple 4":
+                synthOptions = {
+                    oscillator: {
+                        type: "sine"
+                    },
+                    envelope: {
+                        attack: 0.03,
+                        decay: 0.001,
+                        sustain: 1,
+                        release: 0.03
+                    }
+                };
+                break;
+            case "duosynth":
+                synthOptions = {
+                    vibratoAmount: 0.5,
+                    vibratoRate: 5,
+                    harmonicity: 1.5,
+                    voice0: {
+                        volume: -10,
+                        portamento: 0,
+                        oscillator: {
+                            type: "sine"
+                        },
+                        filterEnvelope: {
+                            attack: 0.01,
+                            decay: 0.001,
+                            sustain: 1,
+                            release: 0.5
+                        },
+                        envelope: {
+                            attack: 0.01,
+                            decay: 0.001,
+                            sustain: 1,
+                            release: 0.5
+                        }
+                    },
+                    voice1: {
+                        volume: -10,
+                        portamento: 0,
+                        oscillator: {
+                            type: "sine"
+                        },
+                        filterEnvelope: {
+                            attack: 0.01,
+                            decay: 0.001,
+                            sustain: 1,
+                            release: 0.5
+                        },
+                        envelope: {
+                            attack: 0.01,
+                            decay: 0.001,
+                            sustain: 1,
+                            release: 0.5
+                        }
+                    }
+                };
+                break;
+            case "sine":
+            case "triangle":
+            case "square":
+            case "sawtooth":
+                synthOptions = {
+                    oscillator: {
+                        type: sourceNameLC
+                    },
+                    envelope: {
+                        attack: 0.03,
+                        decay: 0.001,
+                        sustain: 1,
+                        release: 0.03
+                    }
+                };
+                break;
+            case "pluck":
+                synthOptions = {
+                    attackNoise: 1,
+                    dampening: 4000,
+                    resonance: 0.9
+                };
+                break;
+            case "poly":
+                synthOptions = {
+                    polyphony: POLYCOUNT
+                };
+                break;
+            default:
+                synthOptions = {};
+                break;
+        }
+
+        return synthOptions;
+    };
+
+    /**
+     * Creates the default poly/default/custom synth for the specified turtle.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The turtle identifier.
+     */
+    this.createDefaultSynth = turtle => {
+        console.debug("create default poly/default/custom synth for turtle " + turtle);
+        // "electronic synth" and "custom" must be separate instances. "custom" is a
+        // member of BUILTIN_SYNTHS, so ___createSynth disposes whatever sits under
+        // that key before rebuilding it. Sharing one node meant that rebuilding
+        // "custom" also destroyed the synth "electronic synth" was still pointing at.
+        instruments[turtle]["electronic synth"] = new Tone.PolySynth(
+            Tone.AMSynth,
+            POLYCOUNT
+        ).toDestination();
+        instrumentsSource["electronic synth"] = [0, "electronic synth"];
+        instruments[turtle]["custom"] = new Tone.PolySynth(Tone.AMSynth, POLYCOUNT).toDestination();
+        instrumentsSource["custom"] = [0, "custom"];
+    };
+
+    /**
+     * Creates a synth using existing samples: drums and voices.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The turtle identifier.
+     * @param {string} instrumentName - The name of the instrument.
+     * @param {string} sourceName - The name of the source.
+     * @returns {Tone.Sampler|Tone.Player} - The created synth.
+     */
+    this._createSampleSynth = (turtle, instrumentName, sourceName) => {
+        let tempSynth;
+        if (sourceName in this.samples.voice) {
+            instrumentsSource[instrumentName] = [2, sourceName];
+            const noteDict = {};
+            if (sourceName in SAMPLECENTERNO) {
+                noteDict[SAMPLECENTERNO[sourceName][0]] = this.samples.voice[sourceName];
+            } else if (sourceName in MULTIPITCH) {
+                for (let i = 0; i < MULTIPITCH[sourceName].length; i++) {
+                    noteDict[MULTIPITCH[sourceName][i]] = this.samples.voice[sourceName][i];
+                }
+            } else {
+                noteDict["C4"] = this.samples.voice[sourceName];
+            }
+            tempSynth = new Tone.Sampler(noteDict);
+        } else if (sourceName in this.samples.drum) {
+            instrumentsSource[instrumentName] = [1, sourceName];
+            tempSynth = new Tone.Player(this.samples.drum[sourceName]);
+        } else if (sourceName in CUSTOMSAMPLES) {
+            instrumentsSource[instrumentName] = [2, sourceName];
+            const noteDict = {};
+            const params = CUSTOMSAMPLES[sourceName];
+
+            // Get the base center note
+            const center = this._parseSampleCenterNo(params[1], params[2]);
+
+            // The fourth parameter is the cent adjustment set in the sampler widget.
+            if (!this.sampleCentAdjustments) {
+                this.sampleCentAdjustments = {};
+            }
+            this.sampleCentAdjustments[sourceName] = params[3] || 0;
+
+            noteDict[center] = params[0];
+            tempSynth = new Tone.Sampler(noteDict);
+        } else {
+            // default drum sample
+            instrumentsSource[instrumentName] = [1, "drum"];
+            tempSynth = new Tone.Player(this.samples.drum[DEFAULTDRUM]);
+        }
+
+        return tempSynth;
+    };
+
+    /**
+     * Parses solfege notation and octave to determine the pitch number.
+     * @function
+     * @memberof Synth
+     * @param {string} solfege - The solfege notation.
+     * @param {number} octave - The octave number.
+     * @returns {string} - The pitch number.
+     */
+    this._parseSampleCenterNo = (solfege, octave) => {
+        // const pitchName = "C4";
+        const solfegeDict = { do: 0, re: 2, mi: 4, fa: 5, sol: 7, la: 9, ti: 11 };
+        const letterDict = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+        const note = stripMicrotonalPrefix(solfege);
+        const articulation = getArticulation(note);
+        let attr = 0;
+        if (articulation === SHARP) {
+            attr = 1;
+        } else if (articulation === FLAT) {
+            attr = -1;
+        } else if (articulation === DOUBLESHARP) {
+            attr = 2;
+        } else if (articulation === DOUBLEFLAT) {
+            attr = -2;
+        }
+
+        const fragment = articulation ? note.replace(articulation, "") : note;
+        let chromaticNumber = 0;
+        if (fragment in solfegeDict) {
+            chromaticNumber = solfegeDict[fragment];
+        } else if (fragment in letterDict) {
+            chromaticNumber = letterDict[fragment];
+        } else {
+            console.debug("Cannot parse " + fragment);
+        }
+        const pitchNumber = octave * 12 + chromaticNumber + attr;
+        return pitchNumber.toString();
+    };
+
+    /**
+     * Creates a synth using builtin synths from Tone.js.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The turtle identifier.
+     * @param {string} instrumentName - The name of the instrument.
+     * @param {string} sourceName - The name of the source.
+     * @param {Object} params - Additional parameters for synth configuration.
+     * @returns {Tone.Synth|Tone.PolySynth|Tone.PluckSynth|Tone.NoiseSynth} - The created synth.
+     */
+    this._createBuiltinSynth = (turtle, instrumentName, sourceName, params) => {
+        let synthOptions, builtin_synth;
+        if (sourceName in BUILTIN_SYNTHS) {
+            synthOptions = this.getDefaultParamValues(sourceName);
+            synthOptions = validateAndSetParams(synthOptions, params);
+        }
+
+        switch (sourceName) {
+            case "simple 1":
+            case "simple 2":
+            case "simple 3":
+            case "simple 4":
+                instrumentsSource[instrumentName] = [3, sourceName];
+                // console.debug(sourceName);
+                builtin_synth = new Tone.Synth(synthOptions);
+                break;
+            case "sine":
+            case "triangle":
+            case "square":
+            case "sawtooth":
+                instrumentsSource[instrumentName] = [3, sourceName];
+                // console.debug(sourceName);
+                builtin_synth = new Tone.Synth(synthOptions);
+                break;
+            case "pluck":
+                instrumentsSource[instrumentName] = [3, sourceName];
+                // console.debug(sourceName);
+                builtin_synth = new Tone.PluckSynth(synthOptions);
+                break;
+            case "poly":
+                instrumentsSource[instrumentName] = [0, "poly"];
+                // console.debug("poly");
+                builtin_synth = new Tone.PolySynth(Tone.AMSynth, synthOptions.polyphony);
+                break;
+            case "noise1":
+            case "noise2":
+            case "noise3":
+                instrumentsSource[instrumentName] = [4, sourceName];
+                // console.debug(sourceName);
+                builtin_synth = new Tone.NoiseSynth(synthOptions);
+                break;
+            default:
+                instrumentsSource[instrumentName] = [0, "poly"];
+                // console.debug("poly (default)");
+                builtin_synth = new Tone.PolySynth(Tone.AMSynth, POLYCOUNT);
+                break;
+        }
+
+        return builtin_synth;
+    };
+
+    /**
+     * Creates a custom synth using Tone.js methods like AMSynth, FMSynth, etc.
+     * @function
+     * @memberof Synth
+     * @param {string} sourceName - The name of the source.
+     * @param {Object} params - Additional parameters for synth configuration.
+     * @returns {Tone.AMSynth|Tone.FMSynth|Tone.DuoSynth|Tone.PolySynth} - The created custom synth.
+     */
+    this._createCustomSynth = (sourceName, params) => {
+        // Getting parameters for custom synth
+        let synthOptions = this.getDefaultParamValues(sourceName);
+        synthOptions = validateAndSetParams(synthOptions, params);
+
+        let tempSynth;
+        if (sourceName.toLowerCase() === "amsynth") {
+            tempSynth = new Tone.AMSynth(synthOptions);
+        } else if (sourceName.toLowerCase() === "fmsynth") {
+            tempSynth = new Tone.FMSynth(synthOptions);
+        } else if (sourceName.toLowerCase() === "duosynth") {
+            tempSynth = new Tone.DuoSynth(synthOptions);
+        } else {
+            tempSynth = new Tone.PolySynth(Tone.AMSynth, POLYCOUNT);
+        }
+
+        return tempSynth;
+    };
+
+    /**
+     * Creates a synth based on the specified parameters, either using samples, built-in synths, or custom synths.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The turtle identifier.
+     * @param {string} instrumentName - The name of the instrument.
+     * @param {string} sourceName - The name of the source.
+     * @param {Object} params - Additional parameters for synth configuration.
+     */
+    this.__createSynth = (turtle, instrumentName, sourceName, params) => {
+        // Ensure the structure is initialized
+        if (this.samples === null) {
+            this.loadSamples();
+        }
+
+        // Check if it's an audio sample that needs loading
+        let sampleType = null;
+        if (sourceName in SAMPLE_INFO.voice) sampleType = "voice";
+        else if (sourceName in SAMPLE_INFO.drum) sampleType = "drum";
+
+        // If it's a sample...
+        if (sampleType) {
+            // If already loaded, proceed synchronously
+            if (this.samples[sampleType][sourceName] !== null) {
+                this.___createSynth(turtle, instrumentName, sourceName, params);
+                return Promise.resolve();
+            }
+
+            // If not loaded, load asynchronously (lazy loading)
+            return this._loadSample(sourceName)
+                .then(() => {
+                    this.___createSynth(turtle, instrumentName, sourceName, params);
+                })
+                .catch(err => {
+                    console.error(`Failed to load ${sourceName}:`, err);
+                });
+        }
+
+        // Not a sample (built-in, custom synth, etc.) - create synchronously
+        this.___createSynth(turtle, instrumentName, sourceName, params);
+        return Promise.resolve();
+    };
+
+    /**
+     * Internal implementation of createSynth, called after sample is ensured loaded.
+     */
+    this.___createSynth = (turtle, instrumentName, sourceName, params) => {
+        // this._loadSample(sourceName); // Already loaded by __createSynth wrapper
+        if (sourceName in this.samples.voice || sourceName in this.samples.drum) {
+            if (!instruments[turtle][instrumentName]) {
+                instruments[turtle][instrumentName] = this._createSampleSynth(
+                    turtle,
+                    instrumentName,
+                    sourceName,
+                    params
+                );
+            }
+        } else if (sourceName in BUILTIN_SYNTHS) {
+            if (instruments[turtle] && instruments[turtle][instrumentName]) {
+                if (typeof instruments[turtle][instrumentName].dispose === "function") {
+                    try {
+                        instruments[turtle][instrumentName].dispose();
+                    } catch (e) {
+                        console.debug("Error disposing instrument:", e);
+                    }
+                }
+                delete instruments[turtle][instrumentName];
+            }
+
+            if (!instruments[turtle][instrumentName]) {
+                instruments[turtle][instrumentName] = this._createBuiltinSynth(
+                    turtle,
+                    instrumentName,
+                    sourceName,
+                    params
+                );
+            }
+        } else if (sourceName in CUSTOM_SYNTHS) {
+            if (instruments[turtle] && instruments[turtle][instrumentName]) {
+                if (typeof instruments[turtle][instrumentName].dispose === "function") {
+                    try {
+                        instruments[turtle][instrumentName].dispose();
+                    } catch (e) {
+                        console.debug("Error disposing instrument:", e);
+                    }
+                }
+                delete instruments[turtle][instrumentName];
+            }
+
+            if (!instruments[turtle][instrumentName]) {
+                instruments[turtle][instrumentName] = this._createCustomSynth(sourceName, params);
+            }
+
+            instrumentsSource[instrumentName] = [0, "poly"];
+        } else if (sourceName in CUSTOMSAMPLES) {
+            if (instruments[turtle] && instruments[turtle][instrumentName]) {
+                if (typeof instruments[turtle][instrumentName].dispose === "function") {
+                    try {
+                        instruments[turtle][instrumentName].dispose();
+                    } catch (e) {
+                        console.debug("Error disposing instrument:", e);
+                    }
+                }
+                delete instruments[turtle][instrumentName];
+            }
+
+            if (!instruments[turtle][instrumentName]) {
+                instruments[turtle][instrumentName] = this._createSampleSynth(
+                    turtle,
+                    instrumentName,
+                    sourceName,
+                    params
+                );
+            }
+        } else {
+            if (sourceName.length >= 4) {
+                if (sourceName.slice(0, 4) === "http") {
+                    instruments[turtle][sourceName] = new Tone.Sampler(sourceName).toDestination();
+                    instrumentsSource[instrumentName] = [1, "drum"];
+                } else if (sourceName.slice(0, 4) === "file") {
+                    instruments[turtle][sourceName] = new Tone.Sampler(sourceName).toDestination();
+                    instrumentsSource[instrumentName] = [1, "drum"];
+                } else if (sourceName === "drum") {
+                    instruments[turtle][sourceName] = this._createSampleSynth(
+                        turtle,
+                        sourceName,
+                        sourceName,
+                        null
+                    ).toDestination();
+                    instrumentsSource[instrumentName] = [1, "drum"];
+                }
+            }
+        }
+    };
+
+    /**
+     * Creates a synth based on the user's input in the 'Timbre' clamp, handling race conditions with the samples loader.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The turtle identifier.
+     * @param {string} instrumentName - The name of the instrument.
+     * @param {string} sourceName - The name of the source.
+     * @param {Object} params - Additional parameters for synth configuration.
+     */
+    this.createSynth = (turtle, instrumentName, sourceName, params) => {
+        // Just call __createSynth which handles on-demand loading
+        return this.__createSynth(turtle, instrumentName, sourceName, params);
+    };
+
+    /**
+     * Resolves an instrument/drum/noise name (which might be a translated label)
+     * to its internal technical key.
+     * @param {string} name - The name to resolve.
+     * @returns {string} The resolved internal key.
+     */
+    this.resolveInstrumentName = name => {
+        if (!name || typeof name !== "string") return name;
+
+        // 1. Check VoiceNames
+        for (let i = 0; i < VOICENAMES.length; i++) {
+            if (VOICENAMES[i][0] === name || VOICENAMES[i][1] === name) {
+                return VOICENAMES[i][1];
+            }
+        }
+
+        // 2. Check DrumNames
+        for (let i = 0; i < DRUMNAMES.length; i++) {
+            if (DRUMNAMES[i][0] === name || DRUMNAMES[i][1] === name) {
+                return DRUMNAMES[i][1];
+            }
+        }
+
+        // 3. Check NoiseNames
+        for (let i = 0; i < NOISENAMES.length; i++) {
+            if (NOISENAMES[i][0] === name || NOISENAMES[i][1] === name) {
+                return NOISENAMES[i][1];
+            }
+        }
+
+        return name; // Fallback to original (e.g. custom sample URL)
+    };
+
+    /**
+     * Loads a synth based on the user's input, creating and setting volume for the specified turtle.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The turtle identifier.
+     * @param {string} sourceName - The name of the source.
+     * @returns {Tone.Instrument|null} - The loaded synth or null if not loaded.
+     */
+    this.loadSynth = async (turtle, sourceName) => {
+        sourceName = this.resolveInstrumentName(sourceName);
+        if (sourceName.substring(0, 13) === "customsample_") {
+            console.debug("loading custom " + sourceName);
+        } else {
+            console.debug("loading " + sourceName);
+        }
+        await this.createSynth(turtle, sourceName, sourceName, null);
+        this.setVolume(turtle, sourceName, last(Singer.masterVolume));
+
+        if (sourceName in instruments[turtle]) {
+            const synth = instruments[turtle][sourceName];
+            // A new instrument plays into the master output until a note routes it elsewhere.
+            return _routedOutput.has(synth) ? synth : this.routeInstrument(synth, Tone.Destination);
+        }
+
+        return null;
+    };
+
+    /**
+     * Perform notes using the provided synth, notes, and parameters for effects and filters.
+     * @function
+     * @memberof Synth
+     * @param {Tone.Instrument} synth - The Tone.js instrument.
+     * @param {string|number} notes - The notes to be played or the number of notes.
+     * @param {number} beatValue - The duration of each beat.
+     * @param {Object|null} paramsEffects - Parameters for effects like vibrato, tremolo, etc.
+     * @param {Object|null} paramsFilters - Parameters for filters.
+     * @param {boolean} setNote - Indicates whether to set the note on the synth.
+     * @param {number} future - The time in the future when the notes should be played.
+     * @param {Tone.ToneAudioNode} [output] - The node to play into, e.g. a panner.
+     * @param {number} [cents] - Detune applied to every note, e.g. a custom sample's tuning.
+     */
+    this._performNotes = async (
+        synth,
+        notes,
+        beatValue,
+        paramsEffects,
+        paramsFilters,
+        setNote,
+        future,
+        output = Tone.Destination,
+        cents = 0
+    ) => {
+        const isStandardNote = note => {
+            if (typeof note !== "string") return true;
+            if (note.toUpperCase() === "R") return true;
+            return /^[A-Ga-g][#b]?-?\d+$/i.test(note);
+        };
+
+        const needsFreqConversion = () => {
+            if (this.inTemperament !== "equal" && !isCustomTemperament(this.inTemperament)) {
+                return true;
+            }
+            if (typeof notes === "string") {
+                return !isStandardNote(notes);
+            }
+            if (Array.isArray(notes)) {
+                return notes.some(n => !isStandardNote(n));
+            }
+            return false;
+        };
+
+        // Normalize Unicode accidentals to ASCII so Tone.js can parse the note names.
+        if (typeof notes === "string") {
+            notes = normalizeNoteAccidentals(notes);
+        } else if (Array.isArray(notes)) {
+            notes = notes.map(n => (typeof n === "string" ? normalizeNoteAccidentals(n) : n));
+        }
+
+        if (needsFreqConversion()) {
+            if (typeof notes !== "number") {
+                const notes1 = notes;
+                notes = this._getFrequency(notes, this.changeInTemperament);
+                if (notes === undefined) {
+                    if (notes1.substring(1, notes1.length - 1) === DOUBLEFLAT) {
+                        notes = notes1.substring(0, 1) + "bb" + notes1.substring(notes1.length - 1);
+                    } else if (notes1.substring(1, notes1.length - 1) === DOUBLESHARP) {
+                        notes = notes1.substring(0, 1) + "x" + notes1.substring(notes1.length - 1);
+                    } else {
+                        notes = notes1;
+                    }
+                }
+            }
+        }
+
+        if (isCustomTemperament(this.inTemperament)) {
+            const notes1 = notes;
+            notes = this.getCustomFrequency(notes, this.inTemperament);
+            if (notes === undefined || notes === "undefined") {
+                notes = notes1;
+            }
+        }
+
+        const detune = value => {
+            const ratio = Math.pow(2, cents / 1200);
+            const hertz = this._getFrequency(value, false);
+            return Array.isArray(hertz) ? hertz.map(f => f * ratio) : hertz * ratio;
+        };
+
+        if (cents) {
+            notes = detune(notes);
+        }
+
+        let numFilters;
+        const temp_filters = [];
+        const effectsToDispose = [];
+        const epoch = this._instrumentEpoch;
+
+        try {
+            if (paramsEffects === null && paramsFilters === null) {
+                // See https://github.com/sugarlabs/musicblocks/issues/2951
+                try {
+                    await Tone.ToneAudioBuffer.loaded();
+                    if (this._instrumentEpoch !== epoch) return;
+                    synth.triggerAttackRelease(notes, beatValue, Tone.now() + future);
+                } catch (e) {
+                    console.debug("Error triggering note:", e);
+                }
+            } else {
+                // ── Perf fix: fast-path for notes with no real graph-level effect nodes ──
+                // doPartials and doPortamento only mutate synth properties in-place and
+                // do NOT require new audio graph nodes.  Skipping disconnect/reconnect
+                // for every plain note eliminates per-note audio-graph rewiring, which
+                // is the primary cause of buffer underruns in long/infinite sessions.
+                const _needsGraphRewire =
+                    (paramsFilters !== null &&
+                        paramsFilters !== undefined &&
+                        paramsFilters.length > 0) ||
+                    (paramsEffects !== null &&
+                        paramsEffects !== undefined &&
+                        (paramsEffects.doVibrato ||
+                            paramsEffects.doDistortion ||
+                            paramsEffects.doTremolo ||
+                            paramsEffects.doPhaser ||
+                            paramsEffects.doChorus ||
+                            paramsEffects.doNeighbor ||
+                            (paramsEffects.doPortamento && setNote)));
+
+                if (!_needsGraphRewire) {
+                    // Apply in-place property mutations then take the fast path.
+                    if (paramsEffects !== null && paramsEffects !== undefined) {
+                        if (paramsEffects.doPartials) {
+                            if (synth.oscillator !== undefined) {
+                                synth.oscillator.partials = paramsEffects.partials;
+                            } else if (synth.voices !== undefined) {
+                                for (let i = 0; i < synth.voices.length; i++) {
+                                    if (synth.voices[i].oscillator) {
+                                        synth.voices[i].oscillator.partials =
+                                            paramsEffects.partials;
+                                    }
+                                }
+                            }
+                        }
+                        if (paramsEffects.doPortamento) {
+                            if (synth.oscillator !== undefined) {
+                                synth.portamento = paramsEffects.portamento;
+                            } else if (synth.voices !== undefined) {
+                                for (let i = 0; i < synth.voices.length; i++) {
+                                    synth.voices[i].portamento = paramsEffects.portamento;
+                                }
+                            }
+                        }
+                    }
+                    try {
+                        await Tone.ToneAudioBuffer.loaded();
+                        if (this._instrumentEpoch !== epoch) return;
+                        synth.triggerAttackRelease(notes, beatValue, Tone.now() + future);
+                    } catch (e) {
+                        console.debug("Error triggering note (no-graph-rewire fast path):", e);
+                    }
+                    return;
+                }
+                // ─────────────────────────────────────────────────────────────────────
+
+                // Remove the dry path so effects are routed serially, not in parallel
+                _effectsInFlight.set(synth, (_effectsInFlight.get(synth) || 0) + 1);
+                try {
+                    synth.disconnect();
+                } catch (e) {
+                    /* already disconnected */
+                }
+                const chainNodes = [];
+
+                if (paramsFilters !== null && paramsFilters !== undefined) {
+                    numFilters = paramsFilters.length; // no. of filters
+                    for (let k = 0; k < numFilters; k++) {
+                        // filter rolloff has to be added
+                        const filterVal = new Tone.Filter(
+                            paramsFilters[k].filterFrequency,
+                            paramsFilters[k].filterType,
+                            paramsFilters[k].filterRolloff
+                        );
+                        temp_filters.push(filterVal);
+                        chainNodes.push(filterVal);
+                    }
+                }
+
+                let vibrato,
+                    tremolo,
+                    phaser,
+                    distortion,
+                    chorus = null;
+                let neighbor = null;
+                if (paramsEffects !== null && paramsEffects !== undefined) {
+                    if (paramsEffects.doVibrato) {
+                        const vibFreq =
+                            paramsEffects.vibratoFrequency &&
+                            isFinite(paramsEffects.vibratoFrequency) &&
+                            paramsEffects.vibratoFrequency > 0
+                                ? 1 / paramsEffects.vibratoFrequency
+                                : 16;
+                        const vibIntensity =
+                            paramsEffects.vibratoIntensity !== undefined &&
+                            isFinite(paramsEffects.vibratoIntensity) &&
+                            paramsEffects.vibratoIntensity >= 0
+                                ? paramsEffects.vibratoIntensity
+                                : 0.05;
+
+                        vibrato = new Tone.Vibrato(vibFreq, vibIntensity);
+                        chainNodes.push(vibrato);
+                        effectsToDispose.push(vibrato);
+                    }
+
+                    if (paramsEffects.doDistortion) {
+                        distortion = new Tone.Distortion(paramsEffects.distortionAmount);
+                        chainNodes.push(distortion);
+                        effectsToDispose.push(distortion);
+                    }
+
+                    if (paramsEffects.doTremolo) {
+                        tremolo = new Tone.Tremolo({
+                            frequency: paramsEffects.tremoloFrequency,
+                            depth: paramsEffects.tremoloDepth
+                        }).start();
+
+                        chainNodes.push(tremolo);
+                        effectsToDispose.push(tremolo);
+                    }
+
+                    if (paramsEffects.doPhaser) {
+                        phaser = new Tone.Phaser({
+                            frequency: paramsEffects.rate,
+                            octaves: paramsEffects.octaves,
+                            baseFrequency: paramsEffects.baseFrequency
+                        });
+
+                        chainNodes.push(phaser);
+                        effectsToDispose.push(phaser);
+                    }
+
+                    if (paramsEffects.doChorus) {
+                        chorus = new Tone.Chorus({
+                            frequency: paramsEffects.chorusRate,
+                            delayTime: paramsEffects.delayTime,
+                            depth: paramsEffects.chorusDepth
+                        });
+
+                        chainNodes.push(chorus);
+                        effectsToDispose.push(chorus);
+                    }
+
+                    if (paramsEffects.doPartials) {
+                        // Depending on the synth, the oscillator is found
+                        // somewhere else in the synth obj.
+                        if (synth.oscillator !== undefined) {
+                            synth.oscillator.partials = paramsEffects.partials;
+                        } else if (synth.voices !== undefined) {
+                            for (let i = 0; i < synth.voices.length; i++) {
+                                synth.voices[i].oscillator.partials = paramsEffects.partials;
+                            }
+                        }
+                    }
+
+                    if (paramsEffects.doPortamento) {
+                        // Depending on the synth, the oscillator is found
+                        // somewhere else in the synth obj.
+                        if (synth.oscillator !== undefined) {
+                            synth.portamento = paramsEffects.portamento;
+                        } else if (synth.voices !== undefined) {
+                            for (let i = 0; i < synth.voices.length; i++) {
+                                synth.voices[i].portamento = paramsEffects.portamento;
+                            }
+                        }
+                    }
+
+                    if (paramsEffects.doNeighbor) {
+                        const firstTwoBeats = paramsEffects["neighborArgBeat"];
+                        const finalBeat = paramsEffects["neighborArgCurrentBeat"];
+
+                        // Create an array of start times and durations
+                        // for each note.
+                        const obj = [];
+                        for (let i = 0; i < paramsEffects["neighborArgNote1"].length; i++) {
+                            let note1 = normalizeNoteAccidentals(
+                                paramsEffects["neighborArgNote1"][i]
+                            );
+                            let note2 = normalizeNoteAccidentals(
+                                paramsEffects["neighborArgNote2"][i]
+                            );
+                            if (cents) {
+                                note1 = detune(note1);
+                                note2 = detune(note2);
+                            }
+                            obj.push(
+                                { time: 0, note: note1, duration: firstTwoBeats },
+                                { time: firstTwoBeats, note: note2, duration: firstTwoBeats },
+                                { time: firstTwoBeats * 2, note: note1, duration: finalBeat }
+                            );
+                        }
+
+                        neighbor = new Tone.Part((time, value) => {
+                            synth.triggerAttackRelease(value.note, value.duration, time);
+                        }, obj).start();
+                        effectsToDispose.push(neighbor);
+                    }
+                }
+
+                synth.chain(...chainNodes, output);
+
+                if (!paramsEffects || !paramsEffects.doNeighbor) {
+                    if (setNote !== undefined && setNote) {
+                        if (this._instrumentEpoch !== epoch) return;
+                        if (synth.oscillator !== undefined) {
+                            synth.setNote(notes);
+                        } else if (synth.voices !== undefined) {
+                            for (let i = 0; i < synth.voices.length; i++) {
+                                synth.voices[i].setNote(notes);
+                            }
+                        }
+                    } else {
+                        try {
+                            await Tone.ToneAudioBuffer.loaded();
+                            if (this._instrumentEpoch === epoch) {
+                                synth.triggerAttackRelease(notes, beatValue, Tone.now() + future);
+                            }
+                        } catch (e) {
+                            console.debug("Error triggering note:", e);
+                        }
+                    }
+                }
+
+                const timerManager =
+                    this._timerManager ||
+                    (this.activity && this.activity.logo && this.activity.logo._timerManager);
+                const cleanupFn = () => {
+                    try {
+                        // Dispose of effects
+                        effectsToDispose.forEach(effect => {
+                            if (effect && typeof effect.dispose === "function") {
+                                effect.dispose();
+                            }
+                        });
+
+                        // Dispose of filters
+                        if (temp_filters.length > 0) {
+                            temp_filters.forEach(filter => {
+                                if (filter && typeof filter.dispose === "function") {
+                                    filter.dispose();
+                                }
+                            });
+                        }
+
+                        // Re-establish the dry path only when no other effects chain
+                        // is still active on this synth; otherwise the direct
+                        // connection would bypass the in-flight chain.
+                        const remaining = (_effectsInFlight.get(synth) || 1) - 1;
+                        _effectsInFlight.set(synth, remaining);
+                        if (remaining === 0 && synth && typeof synth.toDestination === "function") {
+                            try {
+                                synth.disconnect();
+                            } catch (_) {
+                                // Already disconnected — safe to ignore.
+                            }
+                            synth.connect(_routedOutput.get(synth) || output);
+                        }
+                    } catch (e) {
+                        console.debug("Error disposing effects:", e);
+                    }
+                };
+
+                // Schedule cleanup after the note duration.
+                // A 500 ms safety buffer is added beyond the note duration to prevent
+                // premature disposal caused by audio-clock drift or scheduler jitter,
+                // which would otherwise produce crackling artefacts in long sessions.
+                if (timerManager && typeof timerManager.setGuardedTimeout === "function") {
+                    timerManager.setGuardedTimeout(cleanupFn, beatValue * 1000 + 500, () =>
+                        Boolean(
+                            this.activity && this.activity.logo && this.activity.logo.stopTurtle
+                        )
+                    );
+                } else {
+                    setTimeout(cleanupFn, beatValue * 1000 + 500);
+                }
+            }
+        } catch (e) {
+            console.error("Error in _performNotes:", e);
+            // Clean up any created effects/filters on error
+            effectsToDispose.forEach(effect => {
+                if (effect && typeof effect.dispose === "function") {
+                    effect.dispose();
+                }
+            });
+            temp_filters.forEach(filter => {
+                if (filter && typeof filter.dispose === "function") {
+                    filter.dispose();
+                }
+            });
+
+            const remaining = (_effectsInFlight.get(synth) || 1) - 1;
+            _effectsInFlight.set(synth, remaining);
+            if (remaining === 0 && synth && typeof synth.toDestination === "function") {
+                synth.connect(_routedOutput.get(synth) || output);
+            }
+        }
+    };
+
+    /**
+     * Tracks an active audio source node for garbage collection on stop.
+     * Handles both Tone.Player instances (drums) and synthesizer voices.
+     * @function
+     * @memberof Synth
+     * @param {number} turtle - The turtle index.
+     * @param {Object} audioNode - The audio source node (Tone.Player, Synth, etc.).
+     */
+    this._trackVoice = (turtle, audioNode) => {
+        if (!this.activity || !this.activity.turtles) {
+            return;
+        }
+
+        try {
+            const singer = this.activity.turtles.ithTurtle(turtle).singer;
+            if (!singer || !singer.activeVoices) {
+                return;
+            }
+
+            singer.activeVoices.add(audioNode);
+        } catch (e) {
+            // Silently fail - tracking is optional
+        }
+    };
+
+    /**
+     * Moves a synth onto the given output, dropping its previous route. Does
+     * nothing if it already plays there, so it is cheap to call before every
+     * note. While an effects chain owns the synth, the move waits for the
+     * chain's cleanup.
+     * @function
+     * @memberof Synth
+     * @param {Tone.ToneAudioNode} synth - The instrument to route.
+     * @param {Tone.ToneAudioNode} output - The node to play into, e.g. a panner.
+     * @returns {Tone.ToneAudioNode} The same synth.
+     */
+    this.routeInstrument = (synth, output) => {
+        const current = _routedOutput.get(synth);
+        if (current === output) {
+            return synth;
+        }
+
+        _routedOutput.set(synth, output);
+        if ((_effectsInFlight.get(synth) || 0) > 0) {
+            return synth;
+        }
+
+        // A synth that was never routed plays into Tone.Destination (see loadSynth).
+        const previous = current || Tone.Destination;
+        if (previous !== output) {
+            try {
+                synth.disconnect(previous);
+            } catch (e) {
+                // Not connected there.
+            }
+        }
+
+        synth.connect(output);
+        return synth;
+    };
+
+    // Generalised version of 'trigger and 'triggerwitheffects' functions
+    /**
+     * Triggers notes on a specified turtle with the given parameters.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The name of the turtle.
+     * @param {string|Array} notes - The notes to be played.
+     * @param {number} beatValue - The duration of each beat.
+     * @param {string} instrumentName - The name of the instrument.
+     * @param {Object|null} paramsEffects - Parameters for effects like vibrato, tremolo, etc.
+     * @param {Object|null} paramsFilters - Parameters for filters.
+     * @param {boolean} setNote - Indicates whether to set the note on the synth.
+     * @param {number} future - The time in the future when the notes should be played.
+     * @param {Tone.ToneAudioNode} [output] - The node to play into, e.g. the turtle's panner.
+     */
+    this.trigger = async (
+        turtle,
+        notes,
+        beatValue,
+        instrumentName,
+        paramsEffects,
+        paramsFilters,
+        setNote,
+        future,
+        output
+    ) => {
+        // Capture the current instrument epoch to detect disposal during async operations
+        const epoch = this._instrumentEpoch;
+
+        // If audio is not running, try to start it
+        if (Tone.context.state !== "running") {
+            Tone.start().catch(function (e) {
+                console.warn("Audio start failed:", e);
+            });
+
+            // Set a "Watchdog Timer" (Wait 2 seconds to avoid false positives)
+            setTimeout(function () {
+                // If it is STILL suspended after 2 seconds, it is definitely blocked
+                if (Tone.context.state !== "running" && !window.hasShownAudioWarning) {
+                    window.hasShownAudioWarning = true;
+                    const notice = _(
+                        "⚠️ Sound is disabled!\n\nPlease check your browser settings (Site Settings > Sound) to allow audio for Music Blocks."
+                    );
+
+                    if (window.MBDialog && typeof window.MBDialog.alert === "function") {
+                        window.MBDialog.alert(notice);
+                    } else {
+                        alert(notice);
+                    }
+                }
+            }, 2000);
+        }
+        try {
+            // Ensure audio context is started
+            if (Tone.context.state !== "running") {
+                await Tone.start();
+            }
+
+            // Effects don't work with sine, sawtooth, et al.
+            if (["sine", "sawtooth", "triangle", "square"].includes(instrumentName)) {
+                paramsEffects = null;
+            } else if (paramsEffects !== null && paramsEffects !== undefined) {
+                if (paramsEffects["vibratoIntensity"] !== 0) {
+                    paramsEffects.doVibrato = true;
+                }
+
+                if (paramsEffects["distortionAmount"] !== 0) {
+                    paramsEffects.doDistortion = true;
+                }
+
+                if (paramsEffects["tremoloFrequency"] !== 0) {
+                    paramsEffects.doTremolo = true;
+                }
+
+                if (paramsEffects["rate"] !== 0) {
+                    paramsEffects.doPhaser = true;
+                }
+
+                if (paramsEffects["chorusRate"] !== 0) {
+                    paramsEffects.doChorus = true;
+                }
+
+                if (paramsEffects["neighborSynth"]) {
+                    paramsEffects.doNeighbor = true;
+                }
+            }
+
+            let tempNotes = notes;
+            let tempSynth = instruments[turtle]["electronic synth"];
+            let flag = 0;
+            if (instrumentName in instruments[turtle]) {
+                tempSynth = instruments[turtle][instrumentName];
+                flag = instrumentsSource[instrumentName][0];
+            }
+
+            // Get note values as per the source of the synth.
+            if (future === undefined) {
+                future = 0.0;
+            }
+
+            if (!output) {
+                output = Tone.Destination;
+            }
+
+            // Ensure the requested instrument is properly initialized. It may be
+            // missing because all instruments are disposed on Stop, so reload it
+            // on demand instead of silently playing (or skipping) the note.
+            if (!tempSynth || !(instrumentName in instruments[turtle])) {
+                console.debug("Synth not initialized, loading " + instrumentName);
+                if (!instruments[turtle]["electronic synth"]) {
+                    this.createDefaultSynth(turtle);
+                }
+                await this.loadSynth(turtle, instrumentName);
+
+                // Check if instruments were disposed while we were waiting
+                if (this._instrumentEpoch !== epoch) {
+                    return; // Exit gracefully - instruments were disposed
+                }
+
+                tempSynth = instruments[turtle][instrumentName];
+                flag = instrumentsSource[instrumentName] ? instrumentsSource[instrumentName][0] : 0;
+
+                // Wait for the sample buffer to finish decoding so the reloaded
+                // instrument is audible on the first trigger after a Stop.
+                // Tone.js exposes buffer readiness as a boolean `loaded` flag (it
+                // is not a promise), so wait on the global download queue, like
+                // _performNotes() does, when the sample is not ready yet.
+                if (tempSynth && typeof tempSynth.loaded === "boolean" && !tempSynth.loaded) {
+                    try {
+                        await Tone.ToneAudioBuffer.loaded();
+                    } catch (e) {
+                        console.debug("Error waiting for sample to load:", e);
+                    }
+                }
+            }
+
+            // Final validation: ensure synth still exists and is valid
+            if (!tempSynth || !instruments[turtle] || !instruments[turtle][instrumentName]) {
+                return; // Exit gracefully - synth is no longer available
+            }
+
+            this.routeInstrument(tempSynth, output);
+
+            switch (flag) {
+                case 1: // drum
+                    if (
+                        instrumentName.slice(0, 4) === "http" ||
+                        instrumentName.slice(0, 21) === "data:audio/wav;base64"
+                    ) {
+                        tempSynth.start(Tone.now() + future);
+                        this._trackVoice(turtle, tempSynth);
+                    } else if (instrumentName.slice(0, 4) === "file") {
+                        tempSynth.start(Tone.now() + future);
+                        this._trackVoice(turtle, tempSynth);
+                    } else {
+                        try {
+                            tempSynth.start(Tone.now() + future);
+                            this._trackVoice(turtle, tempSynth);
+                        } catch (e) {
+                            console.debug("Error starting drum synth:", e);
+                        }
+                    }
+                    break;
+                case 2: // voice sample
+                    this._trackVoice(turtle, tempSynth);
+                    await this._performNotes(
+                        tempSynth,
+                        notes,
+                        beatValue,
+                        paramsEffects,
+                        paramsFilters,
+                        setNote,
+                        future,
+                        output,
+                        this.sampleCentAdjustments[instrumentsSource[instrumentName][1]]
+                    );
+                    break;
+                case 3: // builtin synth
+                    if (typeof notes === "object") {
+                        tempNotes = notes[0];
+                    }
+
+                    this._trackVoice(turtle, tempSynth);
+                    await this._performNotes(
+                        tempSynth,
+                        tempNotes,
+                        beatValue,
+                        paramsEffects,
+                        paramsFilters,
+                        setNote,
+                        future,
+                        output
+                    );
+                    break;
+                case 4:
+                    this._trackVoice(turtle, tempSynth);
+                    tempSynth.triggerAttackRelease("c2", beatValue, Tone.now() + future);
+                    break;
+                case 0: // default synth
+                default:
+                    this._trackVoice(turtle, tempSynth);
+                    await this._performNotes(
+                        tempSynth,
+                        tempNotes,
+                        beatValue,
+                        paramsEffects,
+                        paramsFilters,
+                        setNote,
+                        future,
+                        output
+                    );
+                    break;
+            }
+        } catch (e) {
+            console.error("Error in trigger:", e);
+        }
+    };
+
+    this.startSound = (turtle, instrumentName, note) => {
+        if (!instrumentsSource[instrumentName] || !instruments[turtle]?.[instrumentName]) return;
+        const flag = instrumentsSource[instrumentName][0];
+        switch (flag) {
+            case 1: // drum
+                instruments[turtle][instrumentName].start();
+                break;
+            default:
+                instruments[turtle][instrumentName].triggerAttack(note);
+                break;
+        }
+    };
+
+    this.stopSound = (turtle, instrumentName, note) => {
+        if (!instrumentsSource[instrumentName] || !instruments[turtle]?.[instrumentName]) return;
+        // A disposed node is still truthy and its key is still present, so the guard
+        // above lets it through. Calling into Tone at that point throws.
+        if (instruments[turtle][instrumentName].disposed) return;
+        const flag = instrumentsSource[instrumentName][0];
+        switch (flag) {
+            case 1: // drum
+                instruments[turtle][instrumentName].stop();
+                break;
+            default:
+                // eslint-disable-next-line eqeqeq -- loose on purpose, catches null and undefined
+                if (note == undefined) {
+                    instruments[turtle][instrumentName].triggerRelease();
+                } else {
+                    instruments[turtle][instrumentName].triggerRelease(note);
+                }
+                break;
+        }
+    };
+
+    this.loop = (turtle, instrumentName, note, duration, start, bpm, velocity) => {
+        if (!instrumentsSource[instrumentName] || !instruments[turtle]?.[instrumentName])
+            return null;
+        const synthA = instruments[turtle][instrumentName];
+        const flag = instrumentsSource[instrumentName][0];
+        const now = Tone.now();
+        const loopA = new Tone.Loop(time => {
+            // eslint-disable-next-line eqeqeq -- flag comes from instrumentsSource and may be "1"
+            if (flag == 1) {
+                this.setVolume(turtle, instrumentName, velocity * 100);
+                instruments[turtle][instrumentName].start();
+            } else synthA.triggerAttackRelease(note, duration, now + time, velocity);
+        }, 60 / bpm).start(start);
+        return loopA;
+    };
+
+    this.start = () => {
+        this.transport.start();
+    };
+
+    this.stop = () => {
+        this.transport.stop();
+    };
+
+    /**
+     * Calculates the calibrated volume in decibels for a given instrument and volume level.
+     * As per #1697, adjusts the volume for instruments defined in DEFAULTSYNTHVOLUME.
+     * @function
+     * @memberof Synth
+     * @param {string} instrumentName - The name of the instrument.
+     * @param {number} volume - The volume level (0 to 100).
+     * @returns {number} The volume level in decibels.
+     */
+    this.calculateInstrumentVolumeDb = (
+        instrumentName,
+        volume,
+        resolveFn = this.resolveInstrumentName
+    ) => calculateInstrumentVolumeDb(instrumentName, volume, resolveFn);
+
+    this.getCalibratedVolumeDb = this.calculateInstrumentVolumeDb;
+
+    this.rampTo = (turtle, instrumentName, oldVol, volume, rampTime) => {
+        // guard invalid UI/programmatic input (audio boundary safety)
+        volume = clampNumber(volume, 0, 100);
+        if (
+            percussionInstruments.includes(instrumentName) ||
+            stringInstruments.includes(instrumentName)
+        )
+            return;
+
+        const db = this.calculateInstrumentVolumeDb(instrumentName, volume);
+
+        let synth = instruments[turtle]["electronic synth"];
+        if (instrumentName in instruments[turtle]) {
+            synth = instruments[turtle][instrumentName];
+        }
+
+        console.debug(
+            "Crescendo(decibels)",
+            instrumentName,
+            ":",
+            synth.volume.value,
+            "to",
+            db,
+            "t:",
+            rampTime
+        );
+
+        console.debug("Crescendo", instrumentName, ":", oldVol, "to", volume, "t:", rampTime);
+
+        synth.volume.linearRampToValueAtTime(db, Tone.now() + rampTime);
+    };
+
+    /**
+     * new Addtion
+     * Gets the volume for a specific instrument.
+     * @param {string} turtle - The name of the turtle (e.g., "turtle1").
+     * @param {string} instrumentName - The name of the instrument (e.g., "flute").
+     * @returns {number} The volume level in decibels or 50 if not found.
+     */
+    this.getVolume = (turtle, instrumentName) => {
+        if (instruments[turtle] && instruments[turtle][instrumentName]) {
+            return instruments[turtle][instrumentName].volume.value;
+        }
+        console.debug("instrument not found");
+        return 50; // Default volume
+    };
+
+    /**
+     * Sets the volume of a specific instrument for a given turtle.
+     * @function
+     * @memberof Synth
+     * @param {string} turtle - The name of the turtle.
+     * @param {string} instrumentName - The name of the instrument.
+     * @param {number} volume - The volume level (0 to 100).
+     */
+    this.setVolume = (turtle, instrumentName, volume) => {
+        // Resolve instrumentName to internal key
+        instrumentName = this.resolveInstrumentName(instrumentName);
+        const db = this.calculateInstrumentVolumeDb(instrumentName, volume);
+        if (instrumentName in instruments[turtle]) {
+            const synth = instruments[turtle][instrumentName];
+            // Do not schedule a ramp if volume didn't actually change to avoid "flutter" buzz
+            if (Math.abs(synth.volume.value - db) < 0.001) return;
+
+            // Use a tiny ramp (10ms) to prevent clicks
+            const now = Tone.now();
+            synth.volume.cancelScheduledValues(now);
+            synth.volume.setValueAtTime(synth.volume.value, now);
+            synth.volume.linearRampToValueAtTime(db, now + 0.01);
+        }
+    };
+
+    /**
+     * Sets the master volume for all instruments.
+     * @function
+     * @memberof Synth
+     * @param {number} volume - The master volume level (0 to 100).
+     */
+    this.setMasterVolume = (volume, firstConnection, lastConnection) => {
+        if (!instruments[0]["electronic synth"]) {
+            this.createDefaultSynth(0);
+        }
+
+        if (firstConnection === null && lastConnection === null) {
+            // Reset volume to default (0 dB) first
+            Tone.Destination.volume.rampTo(0, 0.01);
+            this.setVolume(0, "electronic synth", volume);
+            setTimeout(() => {
+                this.trigger(0, "G4", 1 / 4, "electronic synth", null, null, false);
+            }, 200);
+        } else {
+            // guard invalid UI/programmatic input (audio boundary safety)
+            volume = clampNumber(volume, 0, 100);
+            const gain = Math.max(0.0001, volume / 100);
+            const db = Tone.gainToDb(gain);
+            Tone.Destination.volume.rampTo(db, 0.01);
+        }
+    };
+
+    /**
+     * Returns the output to the level it sits at on a fresh load.
+     *
+     * DEFAULTVOLUME is the resting value of the master volume stack but it is not the resting
+     * value of the output: running it through the gain curve above lands on -6 dB whereas an
+     * untouched destination is at 0 dB. A project that never sets a volume has to sound the same
+     * after a reset as it does on a fresh load so the level is restored directly.
+     *
+     * @function
+     * @memberof Synth
+     * @returns {void}
+     */
+    this.resetMasterVolume = () => {
+        Tone.Destination.volume.rampTo(0, 0.01);
+    };
+
+    /**
+     * Starts Recording
+     * @function
+     * @memberof Synth
+     */
+    this.startRecording = async () => {
+        await Tone.start();
+
+        if (this.mic) {
+            this.mic.close();
+            if (typeof this.mic.dispose === "function") {
+                this.mic.dispose();
+            }
+            this.mic = null;
+        }
+        if (this.recorder) {
+            if (typeof this.recorder.dispose === "function") {
+                this.recorder.dispose();
+            }
+            this.recorder = null;
+        }
+
+        this.mic = new Tone.UserMedia();
+        this.recorder = new Tone.Recorder();
+        await this.mic.open();
+        this.mic.connect(this.recorder);
+        this.recorder.start();
+    };
+
+    const _disposeRecordingPlayer = () => {
+        if (this._recordingPlayTimeout) {
+            clearTimeout(this._recordingPlayTimeout);
+            this._recordingPlayTimeout = null;
+        }
+        if (this.player) {
+            try {
+                if (typeof this.player.stop === "function") {
+                    this.player.stop();
+                }
+            } catch (e) {
+                console.debug("Error stopping recording player:", e);
+            }
+
+            try {
+                if (typeof this.player.dispose === "function") {
+                    this.player.dispose();
+                }
+            } catch (e) {
+                console.debug("Error disposing recording player:", e);
+            }
+
+            this.player = null;
+        }
+    };
+
+    const _revokeRecordingURL = () => {
+        if (this.audioURL) {
+            try {
+                URL.revokeObjectURL(this.audioURL);
+            } catch (e) {
+                console.debug("Error revoking recording URL:", e);
+            }
+
+            this.audioURL = null;
+        }
+    };
+
+    /**
+     * Stops Recording
+     * @function
+     * @memberof Synth
+     */
+    this.stopRecording = async () => {
+        if (!this.recorder || !this.mic) {
+            return null;
+        }
+        _disposeRecordingPlayer();
+        _revokeRecordingURL();
+        this.recording = await this.recorder.stop();
+        this.mic.close();
+        if (typeof this.mic.dispose === "function") {
+            this.mic.dispose();
+        }
+        this.mic = null;
+        if (typeof this.recorder.dispose === "function") {
+            this.recorder.dispose();
+        }
+        this.recorder = null;
+        this.audioURL = URL.createObjectURL(this.recording);
+        return this.audioURL;
+    };
+
+    /**
+     * Plays Recording
+     * @function
+     * @memberof Synth
+     */
+    this.playRecording = async onEnded => {
+        _disposeRecordingPlayer();
+        if (!this.audioURL) {
+            if (typeof onEnded === "function") {
+                onEnded();
+            }
+            return;
+        }
+        await Tone.start();
+        if (
+            Tone.context &&
+            Tone.context.state !== "running" &&
+            typeof Tone.context.resume === "function"
+        ) {
+            await Tone.context.resume();
+        }
+        this.player = new Tone.Player().toDestination();
+        let endedCalled = false;
+        const handleEnded = () => {
+            if (endedCalled) return;
+            endedCalled = true;
+            if (this._recordingPlayTimeout) {
+                clearTimeout(this._recordingPlayTimeout);
+                this._recordingPlayTimeout = null;
+            }
+            if (typeof onEnded === "function") {
+                onEnded();
+            }
+        };
+        this.player.onstop = handleEnded;
+        if ("onended" in this.player) {
+            this.player.onended = handleEnded;
+        }
+        await this.player.load(this.audioURL);
+        this.player.start();
+        if (this.player.buffer && this.player.buffer.duration) {
+            const durationMs = Math.ceil(this.player.buffer.duration * 1000) + 100;
+            this._recordingPlayTimeout = setTimeout(handleEnded, durationMs);
+        }
+    };
+
+    /**
+     * Stops Recording
+     * @function
+     * @memberof Synth
+     */
+    this.stopPlayBackRecording = () => {
+        _disposeRecordingPlayer();
+    };
+
+    /**
+     * Analyzing the audio
+     * @function
+     * @memberof Synth
+     */
+    this.LiveWaveForm = () => {
+        if (this.analyser) {
+            this.mic.disconnect(this.analyser);
+            this.analyser.dispose();
+        }
+        this.analyser = new Tone.Analyser("waveform", 8192);
+        this.mic.connect(this.analyser);
+    };
+
+    /**
+     * Gets real-time waveform values
+     * @function
+     * @memberof Synth
+     */
+    this.getWaveFormValues = () => {
+        const values = this.analyser.getValue();
+        return values;
+    };
+
+    /**
+     * Disposes all Tone.js instruments, filters, and effects for every turtle
+     * to free audio memory (decoded AudioBuffers, Web Audio nodes, etc.).
+     * Instruments will be re-created by prepSynths() on the next run.
+     * @function
+     * @memberof Synth
+     * @returns {void}
+     */
+    this.disposeAllInstruments = () => {
+        this._instrumentEpoch++;
+        _disposeRecordingPlayer();
+        _revokeRecordingURL();
+
+        if (this.analyser) {
+            try {
+                this.mic.disconnect(this.analyser);
+                this.analyser.dispose();
+            } catch (e) {
+                console.debug("Error disposing analyser:", e);
+            }
+            this.analyser = null;
+        }
+
+        for (const turtle in instruments) {
+            for (const instrumentName in instruments[turtle]) {
+                if (
+                    instruments[turtle][instrumentName] &&
+                    typeof instruments[turtle][instrumentName].dispose === "function"
+                ) {
+                    try {
+                        instruments[turtle][instrumentName].dispose();
+                    } catch (e) {
+                        console.debug("Error disposing instrument:", e);
+                    }
+                }
+                delete instruments[turtle][instrumentName];
+            }
+        }
+
+        for (const turtle in instrumentsFilters) {
+            for (const instrumentName in instrumentsFilters[turtle]) {
+                const filters = instrumentsFilters[turtle][instrumentName];
+                if (Array.isArray(filters)) {
+                    filters.forEach(f => {
+                        if (f && typeof f.dispose === "function") {
+                            try {
+                                f.dispose();
+                            } catch (e) {
+                                console.debug("Error disposing filter:", e);
+                            }
+                        }
+                    });
+                }
+                delete instrumentsFilters[turtle][instrumentName];
+            }
+        }
+
+        for (const turtle in instrumentsEffects) {
+            for (const instrumentName in instrumentsEffects[turtle]) {
+                const effects = instrumentsEffects[turtle][instrumentName];
+                if (Array.isArray(effects)) {
+                    effects.forEach(fx => {
+                        if (fx && typeof fx.dispose === "function") {
+                            try {
+                                fx.dispose();
+                            } catch (e) {
+                                console.debug("Error disposing effect:", e);
+                            }
+                        }
+                    });
+                }
+                delete instrumentsEffects[turtle][instrumentName];
+            }
+        }
+    };
+
+    this._instrumentEpoch = 0;
+    this.tone = null;
+    this.noteFrequencies = {};
+    this.startingPitch = "C4";
+    this.audioURL = null;
+    this.player = null;
+    this.recording = null;
+    this.startingPitchOctave = 4;
+    this.octaveTranspose = 0;
+    this.inTemperament = "equal";
+    this.changeInTemperament = false;
+    this.inTransposition = 0;
+    this.transposition = 2;
+    this.playbackRate = 1;
+    this.defaultBPMFactor = 1;
+    this.recorder = null;
+    this.samples = null;
+    this.samplesManifest = null;
+    this.sampleCentAdjustments = {}; // Initialize the sampleCentAdjustments object
+    this.mic = null;
+
+    return this;
+}
+
+Synth.calculateInstrumentVolumeDb = calculateInstrumentVolumeDb;
+Synth.getCalibratedVolumeDb = calculateInstrumentVolumeDb;
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+        Synth,
+        NOISENAMES,
+        VOICENAMES,
+        DRUMNAMES,
+        EFFECTSNAMES,
+        CUSTOMSAMPLES,
+        instrumentsEffects,
+        instrumentsFilters,
+        instruments,
+        instrumentsSource,
+        DEFAULTSYNTHVOLUME,
+        SAMPLE_INFO,
+        calculateInstrumentVolumeDb,
+        audioBufferToWav
+    };
+}

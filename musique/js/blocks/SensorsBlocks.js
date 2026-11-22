@@ -1,0 +1,1101 @@
+// Copyright (c) 2019 Bottersnike
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/*
+   global
+
+   _, FlowBlock, NOINPUTERRORMSG, ValueBlock, docById, toFixed2,
+   LeftBlock, BooleanSensorBlock, NANERRORMSG, hexToRGB, isValidHex, searchColors,
+   Tone, platformColor, _THIS_IS_MUSIC_BLOCKS_
+ */
+
+/* exported setupSensorsBlocks */
+
+function setupSensorsBlocks(activity) {
+    /**
+     * Represents a block that prompts for keyboard input in the logo programming language.
+     * @extends {FlowBlock}
+     */
+    class InputBlock extends FlowBlock {
+        /**
+         * Constructs a new InputBlock instance.
+         */
+        constructor() {
+            super("input");
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+            this.setHelpString([
+                _("The Input block prompts for keyboard input."),
+                "documentation",
+                ""
+            ]);
+
+            this.formBlock({
+                /**
+                 * The name of the block.
+                 * @type {string}
+                 */
+                name: _("input"),
+
+                /**
+                 * The number of arguments expected by the block.
+                 * @type {number}
+                 */
+                args: 1,
+
+                /**
+                 * The type of the argument.
+                 * @type {string}
+                 */
+                argTypes: ["anyin"],
+
+                /**
+                 * The default values for the arguments.
+                 * @type {Array}
+                 */
+                defaults: [_("Input a value")]
+            });
+        }
+
+        /**
+         * Handles the flow of the InputBlock.
+         * @param {Array} args - The arguments provided to the block.
+         * @param {Object} logo - The logo object.
+         * @param {Object} turtle - The turtle object.
+         * @param {number} blk - The block identifier.
+         */
+        flow(args, logo, turtle, blk) {
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            // Pause the flow while waiting for input
+            tur.doWait(120);
+
+            // Display the input form.
+            const inputElem = document.createElement("input");
+            inputElem.id = "textLabel";
+            inputElem.className = "input";
+            inputElem.type = "text";
+            inputElem.value = "";
+            inputElem.style.position = "absolute";
+            inputElem.style.webkitUserSelect = "text";
+            inputElem.style.mozUserSelect = "text";
+            inputElem.style.msUserSelect = "text";
+
+            const labelDiv = docById("labelDiv");
+            if (labelDiv) {
+                labelDiv.replaceChildren(inputElem);
+            }
+            const cblk = activity.blocks.blockList[blk].connections[1];
+            if (cblk !== null && activity.blocks.blockList[cblk]) {
+                inputElem.placeholder = activity.blocks.blockList[cblk].value;
+            }
+            const turtleObj = activity.turtles.getTurtle(turtle);
+            if (turtleObj && turtleObj.container) {
+                inputElem.style.left = turtleObj.container.x + "px";
+                inputElem.style.top = turtleObj.container.y + "px";
+            }
+            inputElem.focus();
+
+            if (labelDiv) {
+                labelDiv.classList.add("hasKeyboard");
+            }
+
+            // Add a handler to continue the flow after the input.
+            function __keyPressed(event) {
+                if (event.key === "Enter") {
+                    // RETURN
+                    const value = inputElem.value;
+                    if (isNaN(value)) {
+                        logo.inputValues[turtle] = value;
+                    } else {
+                        logo.inputValues[turtle] = parseFloat(value);
+                    }
+                    inputElem.blur();
+                    inputElem.style.display = "none";
+                    logo.clearTurtleRun(turtle);
+                    const currentLabelDiv = docById("labelDiv");
+                    if (currentLabelDiv) {
+                        currentLabelDiv.classList.remove("hasKeyboard");
+                    }
+                }
+            }
+
+            inputElem.addEventListener("keypress", __keyPressed);
+        }
+    }
+    /**
+     * Represents a block that stores the input value in the logo programming language.
+     * @extends {ValueBlock}
+     */
+    class InputValueBlock extends ValueBlock {
+        /**
+         * Constructs a new InputValueBlock instance.
+         */
+        constructor() {
+            super("inputvalue", _("input value"));
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+
+            this.setHelpString([
+                _("The Input-value block stores the input."),
+                "documentation",
+                null,
+                "inputvaluehelp"
+            ]);
+        }
+
+        /**
+         * Updates the parameter of the block.
+         * @param {Object} logo - The logo object.
+         * @param {Object} turtle - The turtle object.
+         * @returns {number} - The updated parameter value.
+         */
+        updateParameter(logo, turtle) {
+            if (turtle in logo.inputValues) {
+                return logo.inputValues[turtle];
+            } else {
+                return 0;
+            }
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {Object} turtle - The turtle object.
+         * @param {number} blk - The block identifier.
+         * @returns {number} - The argument value.
+         */
+        arg(logo, turtle, blk) {
+            if (turtle in logo.inputValues) {
+                return logo.inputValues[turtle];
+            } else {
+                activity.errorMsg(NOINPUTERRORMSG, blk);
+                return 0;
+            }
+        }
+    }
+
+    /**
+     * Represents a block that measures the pitch in the logo programming language.
+     * @extends {ValueBlock}
+     */
+    class PitchnessBlock extends ValueBlock {
+        /**
+         * Constructs a new PitchnessBlock instance.
+         */
+        constructor() {
+            super("pitchness", _("pitch"));
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+        }
+
+        /**
+         * Updates the parameter of the block.
+         * @param {Object} logo - The logo object.
+         * @param {Object} turtle - The turtle object.
+         * @param {number} blk - The block identifier.
+         * @returns {number} - The updated parameter value.
+         */
+        updateParameter(logo, turtle, blk) {
+            return toFixed2(activity.blocks.blockList[blk].value);
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @returns {number} - The argument value representing the pitch.
+         */
+        arg(logo) {
+            if (logo.mic === null) {
+                return 440;
+            }
+            if (logo.pitchAnalyser === null) {
+                logo.pitchAnalyser = new Tone.Analyser({
+                    type: "fft",
+                    size: logo.limit,
+                    smoothing: 0
+                });
+                logo.mic.connect(logo.pitchAnalyser);
+            }
+
+            const values = logo.pitchAnalyser.getValue();
+            let max = Infinity;
+            let idx = 0; // frequency bin
+
+            for (let i = 0; i < logo.limit; i++) {
+                const v2 = -values[i];
+                if (v2 < max) {
+                    max = v2;
+                    idx = i;
+                }
+            }
+
+            const freq = idx / (logo.pitchAnalyser.sampleTime * logo.limit * 2);
+            return freq;
+        }
+    }
+
+    /**
+     * Represents a block that measures the loudness in the logo programming language.
+     * @extends {ValueBlock}
+     */
+    class LoudnessBlock extends ValueBlock {
+        /**
+         * Constructs a new LoudnessBlock instance.
+         */
+        constructor() {
+            super("loudness", _("loudness"));
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+            // Put this block on the beginner palette except in Japanese.
+            this.beginnerBlock(!(this.lang === "ja"));
+
+            this.setHelpString([
+                _("The Loudness block returns the volume detected by the microphone."),
+                "documentation",
+                ""
+            ]);
+        }
+
+        /**
+         * Updates the parameter of the block.
+         * @param {Object} logo - The logo object.
+         * @param {Object} turtle - The turtle object.
+         * @param {number} blk - The block identifier.
+         * @returns {number} - The updated parameter value.
+         */
+        updateParameter(logo, turtle, blk) {
+            return toFixed2(activity.blocks.blockList[blk].value);
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @returns {number} - The argument value representing the loudness.
+         */
+        arg(logo) {
+            if (logo.mic === null) {
+                return 0;
+            }
+            if (logo.volumeAnalyser === null) {
+                logo.volumeAnalyser = new Tone.Analyser({
+                    type: "waveform",
+                    size: logo.limit
+                });
+
+                logo.mic.connect(logo.volumeAnalyser);
+            }
+
+            const values = logo.volumeAnalyser.getValue();
+            let sum = 0;
+            for (let k = 0; k < logo.limit; k++) {
+                sum += values[k] * values[k];
+            }
+
+            const rms = Math.sqrt(sum / logo.limit);
+            return Math.round(rms * 100);
+        }
+    }
+
+    /**
+     * Represents a block that triggers an event if a mouse or turtle has been clicked.
+     * @extends {ValueBlock}
+     */
+    class MyClickBlock extends ValueBlock {
+        /**
+         * Constructs a new MyClickBlock instance.
+         */
+        constructor() {
+            super("myclick", _("click"));
+            this.setPalette("sensors", activity);
+            this.beginnerBlock(true);
+
+            if (_THIS_IS_MUSIC_BLOCKS_) {
+                this.setHelpString([
+                    _("The Click block triggers an event if a mouse has been clicked."),
+                    "documentation",
+                    null,
+                    "clickhelp"
+                ]);
+            } else {
+                this.setHelpString([
+                    _("The Click block triggers an event if a turtle has been clicked."),
+                    "documentation",
+                    null,
+                    "clickhelp"
+                ]);
+            }
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @returns {string} - The argument value representing the click event.
+         */
+        arg(logo, turtle) {
+            return "click" + activity.turtles.getTurtle(turtle).id;
+        }
+    }
+
+    /**
+     * Represents a block that triggers an event when the cursor is moved over a mouse or turtle.
+     * @extends {ValueBlock}
+     */
+    class MyCursoroverBlock extends ValueBlock {
+        /**
+         * Constructs a new MyCursoroverBlock instance.
+         */
+        constructor() {
+            // TRANS: The mouse cursor is over the mouse icon
+            super("mycursorover", _("cursor over"));
+            this.setPalette("sensors", activity);
+
+            if (_THIS_IS_MUSIC_BLOCKS_) {
+                this.setHelpString([
+                    _(
+                        "The Cursor over block triggers an event when the cursor is moved over a mouse."
+                    ),
+                    "documentation",
+                    null,
+                    "cursoroverhelp"
+                ]);
+            } else {
+                this.setHelpString([
+                    _(
+                        "The Cursor over block triggers an event when the cursor is moved over a turtle."
+                    ),
+                    "documentation",
+                    null,
+                    "cursoroverhelp"
+                ]);
+            }
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @returns {string} - The argument value representing the cursor-over event.
+         */
+        arg(logo, turtle) {
+            return "CursorOver" + activity.turtles.getTurtle(turtle).id;
+        }
+    }
+
+    /**
+     * Represents a block that triggers an event when the cursor is moved off of a mouse or turtle.
+     * @extends {ValueBlock}
+     */
+    class MyCursoroutBlock extends ValueBlock {
+        /**
+         * Constructs a new MyCursoroutBlock instance.
+         */
+        constructor() {
+            // TRANS: The cursor is "out" -- it is no longer over the mouse.
+            super("mycursorout", _("cursor out"));
+            this.setPalette("sensors", activity);
+
+            if (_THIS_IS_MUSIC_BLOCKS_) {
+                this.setHelpString([
+                    // TRANS: hover
+                    _(
+                        "The Cursor out block triggers an event when the cursor is moved off of a mouse."
+                    ),
+                    "documentation",
+                    null,
+                    "cursorouthelp"
+                ]);
+            } else {
+                this.setHelpString([
+                    // TRANS: hover
+                    _(
+                        "The Cursor out block triggers an event when the cursor is moved off of a turtle."
+                    ),
+                    "documentation",
+                    null,
+                    "cursorouthelp"
+                ]);
+            }
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @returns {string} - The argument value representing the cursor-out event.
+         */
+        arg(logo, turtle) {
+            return "CursorOut" + activity.turtles.getTurtle(turtle).id;
+        }
+    }
+
+    /**
+     * Represents a block that triggers an event when the cursor button is pressed on a mouse or turtle.
+     * @extends {ValueBlock}
+     */
+    class MyCursordownBlock extends ValueBlock {
+        /**
+         * Constructs a new MyCursordownBlock instance.
+         */
+        constructor() {
+            super("mycursordown", _("cursor button down"));
+            this.setPalette("sensors", activity);
+
+            if (_THIS_IS_MUSIC_BLOCKS_) {
+                this.setHelpString([
+                    _(
+                        "The Cursor button down block triggers an event when the cursor button is pressed on a mouse."
+                    ),
+                    "documentation",
+                    null,
+                    "cursordownhelp"
+                ]);
+            } else {
+                this.setHelpString([
+                    _(
+                        "The Cursor button down block triggers an event when the cursor button is pressed on a turtle."
+                    ),
+                    "documentation",
+                    null,
+                    "cursordownhelp"
+                ]);
+            }
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @returns {string} - The argument value representing the cursor button-down event.
+         */
+        arg(logo, turtle) {
+            return "CursorDown" + activity.turtles.getTurtle(turtle).id;
+        }
+    }
+
+    /**
+     * Represents a block that triggers an event when the cursor button is released while over a mouse or turtle.
+     * @extends {ValueBlock}
+     */
+    class MyCursorupBlock extends ValueBlock {
+        /**
+         * Constructs a new MyCursorupBlock instance.
+         */
+        constructor() {
+            super("mycursorup", _("cursor button up"));
+            this.setPalette("sensors", activity);
+
+            if (_THIS_IS_MUSIC_BLOCKS_) {
+                this.setHelpString([
+                    _(
+                        "The Cursor button up block triggers an event when the cursor button is released while over a mouse."
+                    ),
+                    "documentation",
+                    null,
+                    "cursoruphelp"
+                ]);
+            } else {
+                this.setHelpString([
+                    _(
+                        "The Cursor button up block triggers an event when the cursor button is released while over a turtle."
+                    ),
+                    "documentation",
+                    null,
+                    "cursoruphelp"
+                ]);
+            }
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @returns {string} - The argument value representing the cursor button-up event.
+         */
+        arg(logo, turtle) {
+            return "CursorUp" + activity.turtles.getTurtle(turtle).id;
+        }
+    }
+
+    /**
+     * Base class for color component blocks (red, green, blue).
+     * Represents a block that returns the red, green or blue component of the pixel under the mouse or turtle.
+     * @extends {ValueBlock}
+     */
+    class GetColorComponentBlock extends ValueBlock {
+        /**
+         * Constructs a new color component block instance.
+         * @param {string} name - The internal block name (e.g., "getred").
+         * @param {string} label - The display label (e.g., _("red")).
+         * @param {number} index - The RGB component index (0=red, 1=green, 2=blue).
+         * @param {string} helpMouse - Help text for mouse context.
+         * @param {string} helpTurtle - Help text for turtle context.
+         * @param {GetColorPixelBlock} pixelBlock - The pixel color block, which reads the canvas.
+         */
+        constructor(name, label, index, helpMouse, helpTurtle, pixelBlock) {
+            super(name, label);
+            this.colorIndex = index;
+            this.pixelBlock = pixelBlock;
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+
+            if (_THIS_IS_MUSIC_BLOCKS_) {
+                this.setHelpString([helpMouse, "documentation", ""]);
+            } else {
+                this.setHelpString([helpTurtle, "documentation", ""]);
+            }
+        }
+
+        updateParameter(logo, turtle, blk) {
+            return toFixed2(activity.blocks.blockList[blk].value);
+        }
+
+        /**
+         * Retrieves the red, green or blue component of the pixel under the turtle.
+         * @param {Object} logo - The logo object managing the runtime state.
+         * @param {number} turtle - The identifier of the turtle.
+         * @returns {number} - The component from 0 to 100, or that of the fallback gray if
+         *     the pixel cannot be read.
+         */
+        arg(logo, turtle) {
+            let rgb;
+            try {
+                rgb = this.pixelBlock.getPixelRGB(turtle, true);
+            } catch (error) {
+                rgb = GetColorPixelBlock.FALLBACKRGB;
+            }
+
+            return parseInt(rgb[this.colorIndex] / 2.55, 10);
+        }
+    }
+
+    /**
+     * Represents a block that returns the color of the pixel under the mouse or turtle.
+     * @extends {ValueBlock}
+     */
+    class GetColorPixelBlock extends ValueBlock {
+        /**
+         * Constructs a new GetColorPixelBlock instance.
+         */
+        constructor() {
+            super("getcolorpixel", _("pixel color"));
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+            if (_THIS_IS_MUSIC_BLOCKS_) {
+                this.setHelpString([
+                    _("The Get pixel block returns the color of the pixel under the mouse."),
+                    "documentation",
+                    ""
+                ]);
+            } else {
+                this.setHelpString([
+                    _("The Get pixel block returns the color of the pixel under the turtle."),
+                    "documentation",
+                    ""
+                ]);
+            }
+        }
+
+        /**
+         * Updates the parameter value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @param {number} blk - The identifier of the block.
+         * @returns {number} - The updated parameter value representing the color.
+         */
+        updateParameter(logo, turtle, blk) {
+            return toFixed2(activity.blocks.blockList[blk].value);
+        }
+
+        /**
+         * Retrieves the color value of the pixel under the turtle.
+         * @param {Object} logo - The logo object managing the runtime state.
+         * @param {number} turtle - The identifier of the turtle.
+         * @returns {number} - The color index from searchColors, or a fallback value if detection fails.
+         */
+        arg(logo, turtle) {
+            try {
+                return searchColors(...this.getPixelRGB(turtle));
+            } catch (error) {
+                return this.getFallbackColor();
+            }
+        }
+
+        /**
+         * Reads the pixel under the turtle, hiding the turtle while reading so that it does not
+         * cover the pixel.
+         * @param {number} turtle - The identifier of the turtle.
+         * @param {boolean} [composite=false] - Whether to blend a translucent pixel over the
+         *     background, giving the color shown on screen.
+         * @returns {number[]} - The red, green and blue values (0 to 255) of the pixel, or of the
+         *     background if the pixel is transparent.
+         * @throws {Error} - If the turtle, its container or the canvas context cannot be accessed.
+         */
+        getPixelRGB(turtle, composite = false) {
+            const requiredTurtle = activity.turtles.getTurtle(turtle);
+            if (!requiredTurtle.container) {
+                throw new Error("Turtle container unavailable");
+            }
+
+            const { x, y } = requiredTurtle.container;
+            const originalVisibility = requiredTurtle.container.visible;
+
+            try {
+                requiredTurtle.container.visible = false;
+                activity.refreshCanvas();
+                return this.pixelToRGB(this.getPixelData(x, y), composite);
+            } finally {
+                requiredTurtle.container.visible = originalVisibility;
+            }
+        }
+
+        /**
+         * Extracts pixel data from the canvas at the specified coordinates.
+         * @param {number} x - The x-coordinate of the pixel.
+         * @param {number} y - The y-coordinate of the pixel.
+         * @returns {Uint8ClampedArray} - The RGBA values of the pixel.
+         * @throws {Error} - If the canvas context is unavailable.
+         */
+        getPixelData(x, y) {
+            const canvas = docById("overlayCanvas");
+            const ctx = canvas?.getContext("2d");
+            if (!ctx) {
+                throw new Error("Canvas context unavailable");
+            }
+            return ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+        }
+
+        /**
+         * Determines the red, green and blue values based on pixel data.
+         * @param {Uint8ClampedArray} pixelData - The RGBA values of the pixel.
+         * @param {boolean} [composite=false] - Whether to blend a translucent pixel over the
+         *     background, giving the color shown on screen.
+         * @returns {number[]} - The red, green and blue values, those of the background for a
+         *     transparent pixel.
+         */
+        pixelToRGB(pixelData, composite = false) {
+            if (pixelData.length !== 4) {
+                throw new Error("Invalid pixel data");
+            }
+            const [r, g, b, a] = pixelData;
+            if (a === 0) {
+                return this.getBackgroundRGB();
+            }
+            if (!composite || a === 255) {
+                return [r, g, b];
+            }
+
+            const alpha = a / 255;
+            const background = this.getBackgroundRGB();
+            return [r, g, b].map((value, i) =>
+                Math.round(value * alpha + background[i] * (1 - alpha))
+            );
+        }
+
+        /**
+         * Retrieves the red, green and blue values of the background, the one set by the
+         * background block if any, otherwise the theme's.
+         * @returns {number[]} - The red, green and blue values of the background.
+         */
+        getBackgroundRGB() {
+            let r;
+            let g;
+            let b;
+            const background = activity.turtles?._backgroundColor || platformColor.background;
+
+            if (isValidHex(background)) {
+                const rgb = hexToRGB(background);
+                r = rgb.r;
+                g = rgb.g;
+                b = rgb.b;
+            } else {
+                [r, g, b] = background
+                    .match(/\(([^)]+)\)/)[1]
+                    .split(/,\s*/)
+                    .map(Number);
+            }
+
+            return [r, g, b];
+        }
+
+        /**
+         * Provides a default color value in case of failure.
+         * @returns {number} - A default color index (e.g., gray).
+         */
+        getFallbackColor() {
+            return searchColors(...GetColorPixelBlock.FALLBACKRGB);
+        }
+    }
+
+    // Gray, used when the pixel under the turtle cannot be read
+    GetColorPixelBlock.FALLBACKRGB = [128, 128, 128];
+
+    /**
+     * Represents a block that returns the number of seconds that the program has been running.
+     * @extends {ValueBlock}
+     */
+    class TimeBlock extends ValueBlock {
+        /**
+         * Constructs a new TimeBlock instance.
+         */
+        constructor() {
+            super("time", _("time"));
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+            // Put this block on the beginner palette except in Japanese.
+            this.beginnerBlock(!(this.lang === "ja"));
+
+            this.setHelpString([
+                _(
+                    "The Time block returns the number of seconds that the program has been running."
+                ),
+                "documentation",
+                ""
+            ]);
+        }
+
+        /**
+         * Updates the parameter value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @param {number} blk - The identifier of the block.
+         * @returns {number} - The updated parameter value representing the time.
+         */
+        updateParameter(logo, turtle, blk) {
+            return activity.blocks.blockList[blk].value;
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @param {Object} logo - The logo object.
+         * @returns {number} - The argument value representing the time.
+         */
+        arg(logo) {
+            const d = new Date();
+            return (d.getTime() - logo.time) / 1000;
+        }
+    }
+
+    /**
+     * Represents a block that returns the vertical position of the mouse cursor.
+     * @extends {ValueBlock}
+     */
+    class MouseYBlock extends ValueBlock {
+        /**
+         * Constructs a new MouseYBlock instance.
+         */
+        constructor() {
+            super("mousey", _("cursor y"));
+            this.setPalette("sensors", activity);
+            this.beginnerBlock(true);
+            this.parameter = true;
+            this.setHelpString([
+                _("The Cursor Y block returns the vertical position of the mouse."),
+                "documentation",
+                null,
+                "mousebuttonhelp"
+            ]);
+        }
+
+        /**
+         * Updates the parameter value of the block.
+         * @param {Object} logo - The logo object.
+         * @param {number} turtle - The identifier of the turtle.
+         * @param {number} blk - The identifier of the block.
+         * @returns {number} - The updated parameter value representing the mouse cursor's vertical position.
+         */
+        updateParameter(logo, turtle, blk) {
+            return activity.blocks.blockList[blk].value;
+        }
+
+        /**
+         * Retrieves the argument value of the block.
+         * @returns {number} - The argument value representing the mouse cursor's vertical position.
+         */
+        arg() {
+            return activity.getStageY();
+        }
+    }
+
+    /**
+     * Represents a block that returns the horizontal position of the mouse.
+     * @extends {ValueBlock}
+     */
+    class MouseXBlock extends ValueBlock {
+        /**
+         * Constructs a new MouseXBlock instance.
+         */
+        constructor() {
+            super("mousex", _("cursor x"));
+            this.setPalette("sensors", activity);
+            this.beginnerBlock(true);
+            this.parameter = true;
+            this.setHelpString([
+                _("The Cursor X block returns the horizontal position of the mouse."),
+                "documentation",
+                null,
+                "mousebuttonhelp"
+            ]);
+        }
+
+        /**
+         * Updates the parameter of the block.
+         * @param {Logo} logo - The Logo object.
+         * @param {number} turtle - The turtle index.
+         * @param {number} blk - The block index.
+         * @returns {number} - The updated parameter value.
+         */
+        updateParameter(logo, turtle, blk) {
+            return activity.blocks.blockList[blk].value;
+        }
+
+        /**
+         * Retrieves the argument value for the block.
+         * @returns {number} - The horizontal position of the mouse.
+         */
+        arg() {
+            return activity.getStageX();
+        }
+    }
+
+    /**
+     * Represents a block that returns `true` if the mouse button is pressed.
+     * @extends {BooleanSensorBlock}
+     */
+    class MouseButtonBlock extends BooleanSensorBlock {
+        /**
+         * Constructs a new MouseButtonBlock instance.
+         */
+        constructor() {
+            super("mousebutton", _("mouse button"));
+            this.setHelpString([
+                _("The Mouse-button block returns True if the mouse button is pressed."),
+                "documentation",
+                null,
+                "mousebuttonhelp"
+            ]);
+
+            this.setPalette("sensors", activity);
+            this.beginnerBlock(true);
+            this.parameter = true;
+
+            this.extraWidth = 20;
+        }
+
+        /**
+         * Updates the parameter of the block.
+         * @param {Logo} logo - The Logo object.
+         * @param {number} turtle - The turtle index.
+         * @param {number} blk - The block index.
+         * @returns {string} - The updated parameter value (`"true"` or `"false"`).
+         */
+        updateParameter(logo, turtle, blk) {
+            if (activity.blocks.blockList[blk].value) {
+                return _("true");
+            } else {
+                return _("false");
+            }
+        }
+
+        /**
+         * Retrieves the argument value for the block.
+         * @returns {boolean} - `true` if the mouse button is pressed, otherwise `false`.
+         */
+        arg() {
+            return activity.getStageMouseDown();
+        }
+    }
+
+    /**
+     * Represents a block that converts numbers to letters using ASCII encoding.
+     * @extends {LeftBlock}
+     */
+    class ToASCIIBlock extends LeftBlock {
+        /**
+         * Constructs a new ToASCIIBlock instance.
+         */
+        constructor() {
+            super("toascii", _("to ASCII"));
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+            this.setHelpString([
+                _("The To ASCII block converts numbers to letters."),
+                "documentation",
+                ""
+            ]);
+            this.formBlock({
+                args: 1,
+                defaults: [65]
+            });
+        }
+
+        /**
+         * Updates the parameter of the block.
+         * @param {Logo} logo - The Logo object.
+         * @param {number} turtle - The turtle index.
+         * @param {number} blk - The block index.
+         * @returns {number} - The updated parameter value.
+         */
+        updateParameter(logo, turtle, blk) {
+            return activity.blocks.blockList[blk].value;
+        }
+
+        /**
+         * Retrieves the argument value for the block.
+         * @param {Logo} logo - The Logo object.
+         * @param {number} turtle - The turtle index.
+         * @param {number} blk - The block index.
+         * @param {any} receivedArg - The received argument (not used in this method).
+         * @returns {string|number} - The converted letter or 0 in case of an error.
+         */
+        arg(logo, turtle, blk, receivedArg) {
+            const connections = activity.blocks.blockList[blk]?.connections;
+            const parentId = connections?.[0];
+            if (
+                logo.inStatusMatrix &&
+                parentId !== null &&
+                parentId !== undefined &&
+                parentId in activity.blocks.blockList &&
+                activity.blocks.blockList[parentId]?.name === "print"
+            ) {
+                logo.statusFields.push([blk, "toascii"]);
+            } else {
+                const cblk1 = activity.blocks.blockList[blk].connections[1];
+                if (cblk1 === null) {
+                    activity.errorMsg(NOINPUTERRORMSG, blk);
+                    return "A";
+                }
+                const a = logo.parseArg(logo, turtle, cblk1, blk, receivedArg);
+                if (typeof a === "number") {
+                    if (a < 1) return 0;
+                    else return String.fromCharCode(a);
+                } else {
+                    activity.errorMsg(NANERRORMSG, blk);
+                    return 0;
+                }
+            }
+        }
+    }
+
+    /**
+     * Represents a block that returns computer keyboard input.
+     * @extends {ValueBlock}
+     */
+    class KeyboardBlock extends ValueBlock {
+        /**
+         * Constructs a new KeyboardBlock instance.
+         */
+        constructor() {
+            super("keyboard", _("keyboard"));
+            this.setPalette("sensors", activity);
+            this.parameter = true;
+            this.setHelpString([
+                _("The Keyboard block returns computer keyboard input."),
+                "documentation",
+                ""
+            ]);
+            this.makeMacro((x, y) => [
+                [0, "toascii", x, y, [null, 1]],
+                [1, "keyboard", 0, 0, [0, null]]
+            ]);
+        }
+
+        /**
+         * Updates the parameter of the block.
+         * @param {Logo} logo - The Logo object.
+         * @param {number} turtle - The turtle index.
+         * @param {number} blk - The block index.
+         * @returns {number} - The updated parameter value.
+         */
+        updateParameter(logo, turtle, blk) {
+            return activity.blocks.blockList[blk].value;
+        }
+
+        /**
+         * Retrieves the argument value for the block.
+         * @param {Logo} logo - The Logo object.
+         * @returns {number} - The last key code pressed.
+         */
+        arg(logo) {
+            logo.lastKeyCode = activity.getCurrentKeyCode();
+            const val = logo.lastKeyCode;
+            activity.clearCurrentKeyCode();
+            return val;
+        }
+    }
+
+    const colorPixelBlock = new GetColorPixelBlock();
+    [
+        {
+            name: "getred",
+            label: _("red"),
+            index: 0,
+            helpMouse: _(
+                "The Get red block returns the red component of the pixel under the mouse."
+            ),
+            helpTurtle: _(
+                "The Get red block returns the red component of the pixel under the turtle."
+            )
+        },
+        {
+            name: "getgreen",
+            label: _("green"),
+            index: 1,
+            helpMouse: _(
+                "The Get green block returns the green component of the pixel under the mouse."
+            ),
+            helpTurtle: _(
+                "The Get green block returns the green component of the pixel under the turtle."
+            )
+        },
+        {
+            name: "getblue",
+            label: _("blue"),
+            index: 2,
+            helpMouse: _(
+                "The Get blue block returns the blue component of the pixel under the mouse."
+            ),
+            helpTurtle: _(
+                "The Get blue block returns the blue component of the pixel under the turtle."
+            )
+        }
+    ].forEach(cfg => {
+        new GetColorComponentBlock(
+            cfg.name,
+            cfg.label,
+            cfg.index,
+            cfg.helpMouse,
+            cfg.helpTurtle,
+            colorPixelBlock
+        ).setup(activity);
+    });
+    colorPixelBlock.setup(activity);
+    new ToASCIIBlock().setup(activity);
+    new KeyboardBlock().setup(activity);
+    new InputValueBlock().setup(activity);
+    new InputBlock().setup(activity);
+    new TimeBlock().setup(activity);
+    new PitchnessBlock().setup(activity);
+    new LoudnessBlock().setup(activity);
+    new MyCursoroutBlock().setup(activity);
+    new MyCursoroverBlock().setup(activity);
+    new MyCursorupBlock().setup(activity);
+    new MyCursordownBlock().setup(activity);
+    new MyClickBlock().setup(activity);
+    new MouseButtonBlock().setup(activity);
+    new MouseYBlock().setup(activity);
+    new MouseXBlock().setup(activity);
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { setupSensorsBlocks };
+}

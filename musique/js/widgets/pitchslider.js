@@ -1,0 +1,393 @@
+// Copyright (c) 2016-21 Walter Bender
+// Copyright (c) 2016 Hemant Kasat
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+// This widget enable us to create pitches of different frequency varying
+// from given frequency to nextoctave frequency(two times the given frequency)
+// in continuous manner.
+
+/* global _, Tone, getCurrentEDO, clampNumber, announceToScreenReader */
+
+/*
+   Global locations
+    js/utils/utils.js
+        _
+*/
+
+/* exported PitchSlider */
+class PitchSlider {
+    /** AMD module dependencies for lazy loading. */
+    static dependencies = ["widgets/pitchslider"];
+
+    static ICONSIZE = 32;
+    static MIN_FREQUENCY = 27.5;
+    static MAX_FREQUENCY = 16744.04;
+    static DEFAULT_FREQUENCY = 392;
+
+    static normalizeFrequency(value) {
+        const frequency = Number(value);
+
+        if (
+            (typeof value !== "number" && typeof value !== "string") ||
+            (typeof value === "string" && value.trim() === "") ||
+            !Number.isFinite(frequency) ||
+            frequency <= 0
+        ) {
+            return PitchSlider.DEFAULT_FREQUENCY;
+        }
+        return clampNumber(
+            frequency,
+            PitchSlider.MIN_FREQUENCY,
+            PitchSlider.MAX_FREQUENCY,
+            PitchSlider.DEFAULT_FREQUENCY
+        );
+    }
+    /**
+     * @constructor
+     */
+    constructor() {
+        this._delta = 0;
+        this.sliders = {};
+        this._cellScale = 0;
+        this.isActive = false;
+        this.activeSlider = null;
+        this._keyHandler = null;
+    }
+
+    /**
+     * Initializes the pitch/slider
+     * @returns {void}
+     */
+    init(activity) {
+        this.activity = activity;
+        const edo = getCurrentEDO(activity.logo.synth.inTemperament);
+        const semitone = Math.pow(2, 1 / edo);
+        // Preserve pending frequency before closing an existing window.
+        const pendingFrequency = this.frequency;
+
+        const openWindow =
+            typeof window !== "undefined" &&
+            window.widgetWindows &&
+            window.widgetWindows.openWindows
+                ? window.widgetWindows.openWindows["slider"]
+                : null;
+
+        if (openWindow && typeof openWindow.onclose === "function") {
+            openWindow.onclose();
+
+            // Preserve a newly supplied frequency during reinitialization.
+            if (pendingFrequency !== undefined && pendingFrequency !== null) {
+                this.frequency = pendingFrequency;
+            }
+        }
+        this.sliders = {};
+        this.activeSlider = null;
+        if (!this.frequencies || !this.frequencies.length) {
+            if (this.frequency !== undefined && this.frequency !== null) {
+                this.frequencies = [PitchSlider.normalizeFrequency(this.frequency)];
+                this.frequency = null;
+            } else {
+                this.frequencies = [PitchSlider.DEFAULT_FREQUENCY];
+            }
+        } else {
+            this.frequencies = this.frequencies.map(f => PitchSlider.normalizeFrequency(f));
+        }
+        this.initialFrequencies = [...this.frequencies];
+
+        const oscillators = [];
+        for (let i = 0; i < this.frequencies.length; i++) {
+            const osc = new Tone.AMSynth().toDestination();
+            oscillators.push(osc);
+        }
+
+        this._cellScale = 1.0;
+        if (this._keyHandler) {
+            document.removeEventListener("keydown", this._keyHandler, true);
+            this._keyHandler = null;
+        }
+
+        this.widgetWindow = window.widgetWindows.windowFor(this, "pitch slider", "slider", true);
+        if (typeof this.widgetWindow.takeFocus === "function") {
+            this.widgetWindow.takeFocus();
+        }
+        announceToScreenReader(_("Pitch Slider opened"));
+
+        this.isActive = true;
+
+        activity.logo.pitchSlider = this;
+
+        this.widgetWindow.onclose = () => {
+            if (this._keyHandler) {
+                document.removeEventListener("keydown", this._keyHandler, true);
+                this._keyHandler = null;
+            }
+            for (const osc of oscillators) {
+                osc.triggerRelease();
+                osc.dispose();
+            }
+            this.isActive = false;
+            this.frequency = null;
+            activity.logo.pitchSlider = null;
+            announceToScreenReader(_("Pitch Slider closed"));
+            this.widgetWindow.destroy();
+        };
+
+        const keyHandler = event => {
+            if (!this.isActive) return;
+
+            if (
+                typeof window === "undefined" ||
+                !window.widgetWindows ||
+                window.widgetWindows.focused !== this.widgetWindow
+            ) {
+                return;
+            }
+
+            const activeElement = document.activeElement;
+            if (
+                activeElement &&
+                (activeElement.tagName === "TEXTAREA" ||
+                    activeElement.isContentEditable ||
+                    (activeElement.tagName === "INPUT" && activeElement.type !== "range"))
+            ) {
+                return;
+            }
+
+            if (
+                activeElement &&
+                (activeElement.tagName === "BUTTON" || activeElement.tagName === "SELECT")
+            ) {
+                return;
+            }
+
+            if (
+                event.key === "ArrowUp" ||
+                event.key === "ArrowDown" ||
+                event.key === "ArrowLeft" ||
+                event.key === "ArrowRight"
+            ) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                const sliderToUse = this.activeSlider !== null ? this.activeSlider : 0;
+
+                if (this.sliders[sliderToUse]) {
+                    const slider = this.sliders[sliderToUse];
+                    const min = parseFloat(slider.min);
+                    const max = parseFloat(slider.max);
+                    const currentValue = parseFloat(slider.value);
+
+                    const steps = event.shiftKey ? edo : 1;
+
+                    if (event.key === "ArrowUp" || event.key === "ArrowRight") {
+                        // Move up by a semitone or an octave if Shift is pressed
+                        slider.value = this._stepFrequency(currentValue, steps, semitone, min, max);
+                    } else if (event.key === "ArrowDown" || event.key === "ArrowLeft") {
+                        // Move down by a semitone or an octave if Shift is pressed
+                        slider.value = this._stepFrequency(
+                            currentValue,
+                            -steps,
+                            semitone,
+                            min,
+                            max
+                        );
+                    }
+
+                    slider._fromKeyboard = true;
+                    try {
+                        const inputEvent = new Event("input", { bubbles: true });
+                        slider.dispatchEvent(inputEvent);
+                    } finally {
+                        slider._fromKeyboard = false;
+                    }
+                }
+
+                return false;
+            }
+        };
+
+        this._keyHandler = keyHandler;
+        document.addEventListener("keydown", keyHandler, true);
+
+        const MakeToolbar = id => {
+            const toolBarDiv = document.createElement("div");
+            this.widgetWindow._toolbar.appendChild(toolBarDiv);
+            toolBarDiv.style.float = "left";
+
+            const min = this.frequencies[id] / 2;
+            const max = this.frequencies[id] * 2;
+            const slider = this.widgetWindow.addRangeSlider(
+                this.frequencies[id],
+                toolBarDiv,
+                min,
+                max,
+                "pitchSlider"
+            );
+
+            // Set the leftmost slider as active by default
+            if (id === "0") {
+                this.activeSlider = id;
+            }
+
+            slider.addEventListener("pointerdown", () => {
+                this.activeSlider = id;
+                if (typeof this.widgetWindow.takeFocus === "function") {
+                    this.widgetWindow.takeFocus();
+                }
+            });
+            slider.addEventListener("mousedown", () => {
+                this.activeSlider = id;
+                if (typeof this.widgetWindow.takeFocus === "function") {
+                    this.widgetWindow.takeFocus();
+                }
+            });
+            slider.addEventListener("focus", () => {
+                this.activeSlider = id;
+                if (typeof this.widgetWindow.takeFocus === "function") {
+                    this.widgetWindow.takeFocus();
+                }
+            });
+
+            const freqLabel = document.createElement("div");
+            freqLabel.className = "wfbtItem";
+            toolBarDiv.appendChild(freqLabel);
+            freqLabel.textContent = parseFloat(Number(this.frequencies[id]).toFixed(2));
+
+            this.sliders[id] = slider;
+            const changeFreq = () => {
+                this.frequencies[id] = parseFloat(this.sliders[id].value);
+                oscillators[id].frequency.linearRampToValueAtTime(
+                    this.frequencies[id],
+                    Tone.now() + 0.05
+                );
+                freqLabel.textContent = parseFloat(this.frequencies[id].toFixed(2));
+            };
+
+            slider.oninput = () => {
+                if (slider._fromKeyboard) {
+                    changeFreq();
+                    oscillators[id].triggerAttackRelease(this.frequencies[id], "4n");
+                    return;
+                }
+                oscillators[id].triggerAttack(this.frequencies[id]);
+                changeFreq();
+            };
+            slider.onchange = () => {
+                // this._save(this.frequencies[id]);
+                oscillators[id].triggerRelease();
+            };
+
+            this.widgetWindow.addButton(
+                "up.svg",
+                PitchSlider.ICONSIZE,
+                _("Move up"),
+                toolBarDiv
+            ).onclick = () => {
+                slider.value = this._stepFrequency(slider.value, 1, semitone, min, max);
+                changeFreq();
+                oscillators[id].triggerAttackRelease(this.frequencies[id], "4n");
+            };
+
+            this.widgetWindow.addButton(
+                "down.svg",
+                PitchSlider.ICONSIZE,
+                _("Move down"),
+                toolBarDiv
+            ).onclick = () => {
+                slider.value = this._stepFrequency(slider.value, -1, semitone, min, max);
+                changeFreq();
+                oscillators[id].triggerAttackRelease(this.frequencies[id], "4n");
+            };
+
+            this.widgetWindow.addButton(
+                "export-chunk.svg",
+                PitchSlider.ICONSIZE,
+                _("Save"),
+                toolBarDiv
+            ).onclick = () => {
+                this._save(this.frequencies[id]);
+            };
+
+            this.widgetWindow.addButton(
+                "reload.svg",
+                PitchSlider.ICONSIZE,
+                _("Reset"),
+                toolBarDiv
+            ).onclick = () => {
+                const initialFreq =
+                    this.initialFrequencies && this.initialFrequencies[id] !== undefined
+                        ? this.initialFrequencies[id]
+                        : PitchSlider.DEFAULT_FREQUENCY;
+                slider.value = initialFreq;
+                changeFreq();
+                oscillators[id].triggerAttackRelease(this.frequencies[id], "4n");
+            };
+        };
+
+        for (let i = 0; i < this.frequencies.length; i++) {
+            MakeToolbar(String(i));
+        }
+
+        activity.textMsg(_("Use the up/down buttons or arrow keys to change pitch."), 3000);
+        activity.textMsg(_("Click on the slider to create a note block."), 3000);
+        window.requestAnimationFrame(() => this.widgetWindow.sendToCenter());
+    }
+
+    /**
+     * Calculates semitone frequency step with bounds clamping.
+     * Snaps to the nearest exact semitone relative to `min` to prevent octave drift.
+     *
+     * @private
+     * @param {number|string} currentValue
+     * @param {number} steps - integer number of semitone steps to move
+     * @param {number} semitone - frequency multiplier for one semitone
+     * @param {number} min
+     * @param {number} max
+     * @returns {number} Clamped frequency value
+     */
+    _stepFrequency(currentValue, steps, semitone, min, max) {
+        const val = parseFloat(currentValue);
+        // Find nearest integer step from the base frequency (min)
+        const currentStep = Math.round(Math.log(val / min) / Math.log(semitone));
+        const newStep = currentStep + steps;
+        const target = min * Math.pow(semitone, newStep);
+        return clampNumber(target, min, max);
+    }
+
+    /**
+     * @private
+     * @param {number} frequency
+     * @returns {void}
+     */
+    _save(frequency) {
+        for (const name in this.activity.blocks.palettes.dict) {
+            this.activity.blocks.palettes.dict[name].hideMenu(true);
+        }
+
+        this.activity.refreshCanvas();
+
+        const newStack = [
+            [0, "newnote", 100 + this._delta, 100 + this._delta, [null, 1, 4, 7]],
+            [1, "divide", 0, 0, [0, 2, 3]],
+            [2, ["number", { value: 1 }], 0, 0, [1]],
+            [3, ["number", { value: 4 }], 0, 0, [1]],
+            [4, "vspace", 0, 0, [0, 5]],
+            [5, "hertz", 0, 0, [4, 6, null]],
+            [6, ["number", { value: frequency }], 0, 0, [5]],
+            [7, "hidden", 0, 0, [0, null]]
+        ];
+        this._delta += 21;
+
+        this.activity.blocks.loadNewBlocks(newStack);
+    }
+}
+if (typeof module !== "undefined") {
+    module.exports = PitchSlider;
+}

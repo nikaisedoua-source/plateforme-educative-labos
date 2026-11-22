@@ -1,0 +1,624 @@
+/**
+ * @file This contains the action methods of the Turtle's Singer component's Intervals blocks.
+ * @author Anindya Kundu
+ * @author Walter Bender
+ *
+ * @copyright 2014-2020 Walter Bender
+ * @copyright 2020 Anindya Kundu
+ *
+ * @license
+ * This program is free software; you can redistribute it and/or modify it under the terms of the
+ * The GNU Affero General Public License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ * You should have received a copy of the GNU Affero General Public License along with this
+ * library; if not, write to the Free Software Foundation, 51 Franklin Street, Suite 500 Boston,
+ * MA 02110-1335 USA.
+ *
+ * Utility methods are in PascalCase.
+ * Action methods are in camelCase.
+ */
+
+/*
+   global _, NOINPUTERRORMSG, Singer, MUSICALMODES, MusicBlocks, Mouse, getNote,
+   getModeLength, isCustomTemperament, TEMPERAMENT, getCurrentEDO, EDOBOUNDEXCEEDED,
+   pitchToNumber
+*/
+
+/*
+   Global locations
+    js/utils/utils.js
+        _
+    js/logo.js
+        NOINPUTERRORMSG
+    js/utils/musicutils.js
+         MUSICALMODES, MODE_PIE_MENUS, getNote, getModeLength, NOTESTEP,
+         GetNotesForInterval,ALLNOTESTEP,NOTENAMES,SEMITONETOINTERVALMAP,
+         isCustomTemperament, TEMPERAMENT, getCurrentEDO, pitchToNumber
+    js/turtle-singer.js
+        Singer
+    js/js-export/export.js
+        MusicBlocks, Mouse
+ */
+
+/* exported setupIntervalsActions*/
+
+/**
+ * Bounds (in scalar steps) on the value accepted by setScalarInterval().
+ * GetNotesForInterval() derives an octave count as `Math.floor(intervals[0] / 7)`,
+ * which GetIntervalNumber() then turns into whole octaves of steps. These line up
+ * with the existing octave range convention used elsewhere for pitch (see
+ * PitchBlocks.js's "Octave must be an integer in [0, 9]"): 69 is the largest
+ * value for which Math.floor(69 / 7) is still 9, and -63 is the smallest
+ * (Math.floor rounds toward -Infinity, so -64 already overshoots to -10).
+ * Anything outside this range corresponds to an octave shift no Pitch block could
+ * represent, rather than an arbitrary cap.
+ */
+const MAX_SCALAR_INTERVAL = 69;
+const MIN_SCALAR_INTERVAL = -63;
+
+/**
+ * Sets up all the methods related to different actions for each block in Intervals palette.
+ * @returns {void}
+ */
+function setupIntervalsActions(activity) {
+    // Custom modes (pattern + tuning) we've already warned about resetting, so
+    // re-running or reloading the same project doesn't repeat the message.
+    const warnedCustomModeResets = new Set();
+
+    Singer.IntervalsActions = class {
+        /**
+         * Utility function that returns appropriate object key in MUSICMODES corresponding to passed parameter.
+         *
+         * @static
+         * @param {String} mode
+         * @returns {String}
+         */
+        static GetModename(mode) {
+            let modename = "major";
+            if (typeof mode !== "string") {
+                return modename;
+            }
+            const lowercaseMode = mode.toLowerCase();
+            for (const _mode in MUSICALMODES) {
+                if (
+                    _mode.toLowerCase() === lowercaseMode ||
+                    _(_mode).toLowerCase() === lowercaseMode
+                ) {
+                    modename = _mode;
+                    break;
+                }
+            }
+
+            return modename;
+        }
+
+        /**
+         * Utility function to get the number of pitches in the current temperament.
+         *
+         * @static
+         * @returns {Number}
+         */
+        static getTemperamentLength() {
+            const t = TEMPERAMENT[activity.logo.synth.inTemperament];
+            return t?.pitchNumber ?? 12;
+        }
+
+        /**
+         * @static
+         * @param {number} turtle
+         * @returns {String}
+         */
+        static GetIntervalNumber(turtle) {
+            const tur = activity.turtles.ithTurtle(turtle);
+            const temperament = activity.logo.synth.inTemperament;
+            const { firstNote, secondNote, octave } = GetNotesForInterval(tur, temperament);
+            const keySig = tur.singer.keySignature;
+            const firstStep = pitchToNumber(firstNote, 0, keySig, temperament);
+            const secondStep = pitchToNumber(secondNote, 0, keySig, temperament);
+
+            // Use dynamic temperament length for custom tunings
+            const temperamentLength = this.getTemperamentLength();
+
+            // Octave numbers change at C, so the second note sits in a later
+            // (or earlier) octave whenever the letter steps cross a C.
+            const letterSteps = this.getLetterSteps(firstNote, secondNote, octave);
+            const octaveShift =
+                letterSteps === null
+                    ? octave
+                    : Math.floor((this.getLetterIndex(firstNote) + letterSteps) / NOTENAMES.length);
+
+            return Math.abs(secondStep - firstStep + octaveShift * temperamentLength);
+        }
+
+        /**
+         * @static
+         * @param {String} note - Note name, e.g. "A" or "c#".
+         * @returns {Number} Index of the note's letter in NOTENAMES, or -1.
+         */
+        static getLetterIndex(note) {
+            return NOTENAMES.indexOf(String(note).charAt(0).toUpperCase());
+        }
+
+        /**
+         * Letter steps from the first note to the second, e.g. 2 for A up to C
+         * and -4 for G down to C. `octave` follows the scalar-interval convention
+         * of GetNotesForInterval (0 is up by less than an octave, -1 is down by
+         * up to an octave).
+         *
+         * @static
+         * @param {String} firstNote
+         * @param {String} secondNote
+         * @param {Number} octave
+         * @returns {Number|null} Null if either name does not start with a letter.
+         */
+        static getLetterSteps(firstNote, secondNote, octave) {
+            const length = NOTENAMES.length;
+            const index1 = this.getLetterIndex(firstNote);
+            const index2 = this.getLetterIndex(secondNote);
+            if (index1 === -1 || index2 === -1) {
+                return null;
+            }
+            return length * octave + ((((index2 - index1) % length) + length) % length);
+        }
+
+        /**
+         * @static
+         * @param {number} turtle
+         * @returns {String}
+         */
+
+        static GetCurrentInterval(turtle) {
+            const tur = activity.turtles.ithTurtle(turtle);
+            const temperament = activity.logo.synth.inTemperament;
+            const { firstNote, secondNote, octave } = GetNotesForInterval(tur, temperament);
+
+            let lastWord = "";
+            const letterGap =
+                Math.abs(this.getLetterSteps(firstNote, secondNote, octave) ?? 0) %
+                NOTENAMES.length;
+
+            // Use dynamic temperament length for custom tunings
+            const temperamentLength = this.getTemperamentLength();
+
+            let totalIntervals = this.GetIntervalNumber(turtle);
+
+            const numberToStringMap = [
+                _("one"),
+                _("two"),
+                _("three"),
+                _("four"),
+                _("five"),
+                _("six"),
+                _("seven"),
+                _("eight"),
+                _("nine")
+            ];
+            const plural = Math.abs(octave) > 1 ? _("octaves") : _("octave");
+
+            let os = numberToStringMap[Math.abs(octave) - 1] || Math.abs(octave);
+            if (totalIntervals % temperamentLength === 0 && letterGap === 0) {
+                if (octave < 0) {
+                    if (octave === -1) os = "";
+                    const a = `${os ? `${os} ` : ""}${_("perfect")} ${plural} ${_("below")}`;
+                    return a.charAt(0).toUpperCase() + a.slice(1);
+                }
+                if (octave > 1) {
+                    const a = `${os} ${_("perfect")} ${plural} ${_("above")}`;
+                    return a.charAt(0).toUpperCase() + a.slice(1);
+                }
+            }
+
+            // +9 is the original 12-EDO offset: intervals beyond
+            // temperamentLength + 9 get an explicit "plus N octave(s)"
+            // suffix. Same offset scales proportionally for all EDOs.
+            let octavesRemoved = 0;
+            if (totalIntervals > temperamentLength + 9) {
+                while (totalIntervals > temperamentLength) {
+                    totalIntervals -= temperamentLength;
+                    octavesRemoved += 1;
+                }
+            }
+
+            // Count only the octaves taken off above: smaller intervals already
+            // have a compound name (e.g. tenth), and so does "diminished octave".
+            if (octavesRemoved > 0) {
+                const count = numberToStringMap[octavesRemoved - 1] || octavesRemoved;
+                const unit = octavesRemoved > 1 ? _("octaves") : _("octave");
+                lastWord = octave < 0 ? `,  ${count} ${unit}` : `, ${_("plus")} ${count} ${unit}`;
+            }
+
+            if (octave < 0) {
+                lastWord += ` ${_("below")}`;
+            }
+
+            const mapEntry = SEMITONETOINTERVALMAP[totalIntervals];
+            const intervalName =
+                mapEntry && mapEntry[letterGap] !== undefined
+                    ? mapEntry[letterGap]
+                    : `${totalIntervals} ${_("steps")}`;
+            const interval =
+                totalIntervals % temperamentLength === 0 && letterGap === 0
+                    ? intervalName
+                    : intervalName + lastWord;
+            return interval;
+        }
+
+        /**
+         * "set key" block.
+         * Sets the key and mode.
+         *
+         * @static
+         * @param {String} key
+         * @param {String} mode
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @returns {void}
+         */
+        static setKey(key, mode, turtle) {
+            const modename = Singer.IntervalsActions.GetModename(mode);
+            const tur = activity.turtles.ithTurtle(turtle);
+            const noteObj = getNote(
+                key,
+                4,
+                tur.singer.transposition,
+                tur.singer.keySignature,
+                false,
+                null,
+                activity.errorMsg,
+                activity.logo.synth.inTemperament
+            );
+            tur.singer.keySignature = noteObj[0] + " " + modename;
+            activity.logo.notation.notationKey(turtle, noteObj[0], modename);
+        }
+
+        /**
+         * "current key" block.
+         * Returns current key.
+         *
+         * @static
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @returns {String}
+         */
+        static getCurrentKey(turtle) {
+            return activity.turtles.ithTurtle(turtle).singer.keySignature.split(" ")[0];
+        }
+
+        /**
+         * "current mode" block.
+         * Returns current mode.
+         *
+         * @static
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @returns {String}
+         */
+        static getCurrentMode(turtle) {
+            return activity.turtles
+                .ithTurtle(turtle)
+                .singer.keySignature.split(" ")
+                .slice(1)
+                .join(" ");
+        }
+
+        /**
+         * "mode length" block.
+         * Returns current mode length.
+         *
+         * @static
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @returns {Number}
+         */
+        static getModeLength(turtle) {
+            return getModeLength(activity.turtles.ithTurtle(turtle).singer.keySignature);
+        }
+
+        /**
+         * "movable do" block.
+         * Attaches or detaches solfege names to specific pitches.
+         *
+         * @static
+         * @param {Boolean} movable - whether solfeges are fixed or movable
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @returns {void}
+         */
+        static setMovableDo(movable, turtle) {
+            activity.turtles.ithTurtle(turtle).singer.movable = movable;
+        }
+
+        /**
+         * "define mode" block.
+         * Defines a custom mode by specifiying pitch numbers.
+         *
+         * @static
+         * @param {String} name - custom mode name
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @param {Number|String} [blk] - corresponding Block index in blocks.blockList
+         * @returns {void}
+         */
+        static defineMode(name, turtle, blk) {
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            tur.singer.inDefineMode = true;
+            tur.singer.defineMode = [];
+            let modeName;
+            if (name === null) {
+                activity.errorMsg(NOINPUTERRORMSG, blk);
+                modeName = "custom";
+            } else {
+                modeName = name.toLowerCase();
+            }
+
+            const listenerName = "_definemode_" + turtle + "_" + blk;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => {
+                MUSICALMODES[modeName] = [];
+                if (!tur.singer.defineMode.includes(0)) {
+                    tur.singer.defineMode.push(0);
+                    activity.errorMsg(_("Adding missing pitch number 0."));
+                }
+
+                const temperamentLength = Singer.IntervalsActions.getTemperamentLength();
+
+                // Filter out pitches outside [0, temperamentLength - 1]
+                let pitchNumbers = tur.singer.defineMode.sort((a, b) => a - b);
+                const inBounds = pitchNumbers.filter(p => p >= 0 && p < temperamentLength);
+                if (inBounds.length !== pitchNumbers.length) {
+                    activity.errorMsg(EDOBOUNDEXCEEDED, null);
+                }
+                pitchNumbers = inBounds;
+
+                // Remove repeated pitch numbers before calculating intervals.
+                // Computing a step to a duplicate first leaves a zero-length
+                // step in the mode and drops the interval after the duplicate.
+                const uniquePitchNumbers = [];
+                const seenPitchNumbers = new Set();
+                for (const pitchNumber of pitchNumbers) {
+                    const normalizedPitchNumber = pitchNumber % temperamentLength;
+                    if (seenPitchNumbers.has(normalizedPitchNumber)) {
+                        activity.errorMsg(_("Ignoring duplicate pitch numbers."));
+                        continue;
+                    }
+                    seenPitchNumbers.add(normalizedPitchNumber);
+                    uniquePitchNumbers.push(normalizedPitchNumber);
+                }
+                pitchNumbers = uniquePitchNumbers;
+
+                if (pitchNumbers.length > temperamentLength) {
+                    activity.errorMsg(EDOBOUNDEXCEEDED, null);
+                }
+
+                for (let i = 0; i < pitchNumbers.length; i++) {
+                    // Apply mod arithmetic for custom temperaments
+                    const normalizedPitchNumber = pitchNumbers[i];
+
+                    if (i < pitchNumbers.length - 1) {
+                        let nextPitchNumber = pitchNumbers[i + 1] % temperamentLength;
+                        if (nextPitchNumber < 0) {
+                            nextPitchNumber += temperamentLength;
+                        }
+                        MUSICALMODES[modeName].push(nextPitchNumber - normalizedPitchNumber);
+                    } else {
+                        MUSICALMODES[modeName].push(temperamentLength - normalizedPitchNumber);
+                    }
+                }
+
+                if (blk !== undefined && blk in activity.blocks.blockList) {
+                    const cblk = activity.blocks.blockList[blk].connections[1];
+                    if (
+                        cblk !== undefined &&
+                        cblk in activity.blocks.blockList &&
+                        activity.blocks.blockList[cblk].name === "text"
+                    ) {
+                        activity.blocks.updateBlockText(cblk);
+                    }
+                }
+
+                tur.singer.inDefineMode = false;
+            };
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+        }
+
+        /**
+         * "scalar interval" block.
+         * Calculates a relative interval based on the current mode, skipping all notes outside of
+         * the mode for the notes with it.
+         *
+         * @static
+         * @param {Number} value - interval value
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @param {Number|String} [blk] - corresponding Block index in blocks.blockList
+         * @returns {void}
+         */
+        static setScalarInterval(value, turtle, blk) {
+            let arg = value;
+            if (arg === null || typeof arg !== "number") {
+                activity.errorMsg(NOINPUTERRORMSG, blk);
+                arg = 1;
+            } else if (arg > MAX_SCALAR_INTERVAL || arg < MIN_SCALAR_INTERVAL) {
+                activity.errorMsg(_("Scalar interval must be within -63 to 69."), blk);
+                arg = 1;
+            }
+
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            const i = arg > 0 ? Math.floor(arg) : Math.ceil(arg);
+            tur.singer.intervals.push(i);
+
+            const listenerName = "_interval_" + turtle + "_" + blk;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => tur.singer.intervals.pop();
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+        }
+
+        /**
+         * "chord interval" block.
+         * Calculates a scalar interval modified by a semitone interval
+         *
+         * @static
+         * @param {Object} value - interval array: [scalar, semitone]
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @param {Number|String} [blk] - corresponding Block index in blocks.blockList
+         * @returns {void}
+         */
+        static setChordInterval(obj, turtle, blk) {
+            let arg = obj;
+            if (arg === null) {
+                activity.errorMsg(NOINPUTERRORMSG, blk);
+                arg = [1, 0];
+            }
+
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            tur.singer.chordIntervals.push(arg);
+
+            const listenerName = "_chord_interval_" + turtle + "_" + blk;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => tur.singer.chordIntervals.pop();
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+        }
+
+        /**
+         * "semi-tone interval" block.
+         * Calculates a relative interval of half-steps for the notes with it.
+         *
+         * @static
+         * @param {Number} value - interval value
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @param {Number|String} [blk] - corresponding Block index in blocks.blockList
+         * @returns {void}
+         */
+        static setSemitoneInterval(value, turtle, blk) {
+            let arg = value;
+            if (arg === null || typeof arg !== "number") {
+                activity.errorMsg(NOINPUTERRORMSG, blk);
+                arg = 1;
+            }
+
+            const tur = activity.turtles.ithTurtle(turtle);
+
+            const i = arg > 0 ? Math.floor(arg) : Math.ceil(arg);
+            if (i !== 0) {
+                tur.singer.semitoneIntervals.push([i, tur.singer.noteDirection]);
+                tur.singer.noteDirection = 0;
+
+                const listenerName = "_semitone_interval_" + turtle + "_" + blk;
+                if (blk !== undefined && blk in activity.blocks.blockList) {
+                    activity.logo.setDispatchBlock(blk, turtle, listenerName);
+                } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                    const mouse = Mouse.getMouseFromTurtle(tur);
+                    if (mouse !== null) mouse.MB.listeners.push(listenerName);
+                }
+
+                const __listener = () => tur.singer.semitoneIntervals.pop();
+
+                activity.logo.setTurtleListener(turtle, listenerName, __listener);
+            }
+        }
+
+        /**
+         * "ratio interval" block.
+         * Calculates a relative interval based on a ratio.
+         *
+         * @static
+         * @param {Number} value - ratio
+         * @param {Number} turtle - Turtle index in turtles.turtleList
+         * @param {Number|String} [blk] - corresponding Block index in blocks.blockList
+         * @returns {void}
+         */
+        static setRatioInterval(value, turtle, blk) {
+            let arg = value;
+            if (arg === null || typeof arg !== "number") {
+                activity.errorMsg(NOINPUTERRORMSG, blk);
+                arg = 1;
+            }
+
+            const tur = activity.turtles.ithTurtle(turtle);
+            tur.singer.ratioIntervals.push(arg);
+            const listenerName = "_ratio_interval_" + turtle + "_" + blk;
+            if (blk !== undefined && blk in activity.blocks.blockList) {
+                activity.logo.setDispatchBlock(blk, turtle, listenerName);
+            } else if (typeof MusicBlocks !== "undefined" && MusicBlocks.isRun) {
+                const mouse = Mouse.getMouseFromTurtle(tur);
+                if (mouse !== null) mouse.MB.listeners.push(listenerName);
+            }
+
+            const __listener = () => tur.singer.ratioIntervals.pop();
+
+            activity.logo.setTurtleListener(turtle, listenerName, __listener);
+        }
+
+        /**
+         * "temperament" block.
+         * Sets the tuning system used by Music Blocks.
+         *
+         * @static
+         * @param {String} temperament
+         * @param {String} pitch
+         * @param {Number} octave
+         * @returns {void}
+         */
+        static setTemperament(temperament, pitch, octave) {
+            const previousStartingPitch = activity.logo.synth.startingPitch;
+            activity.logo.synth.inTemperament = temperament;
+            activity.logo._userTemperament = temperament;
+            activity.logo.synth.startingPitch = pitch + "" + octave;
+
+            activity.logo.temperamentSelected.push(temperament);
+            const len = activity.logo.temperamentSelected.length;
+
+            if (
+                activity.logo.temperamentSelected[len - 1] !==
+                    activity.logo.temperamentSelected[len - 2] ||
+                (len > 1 && activity.logo.synth.startingPitch !== previousStartingPitch)
+            ) {
+                activity.logo.synth.changeInTemperament = true;
+            }
+
+            // Reset the custom mode only when its steps don't add up to the new
+            // EDO. A defined mode like [2, 2, 3, 2, 3] has fewer steps than the
+            // EDO, so comparing the length would throw it away.
+            const edo = getCurrentEDO(temperament);
+            const custom = MUSICALMODES["custom"];
+            if (
+                !Array.isArray(custom) ||
+                !custom.every(step => Number.isInteger(step) && step > 0) ||
+                custom.reduce((a, b) => a + b, 0) !== edo
+            ) {
+                // Only tell the user when a mode they defined is dropped, not
+                // when the default chromatic pattern is resized.
+                const wasDefined = Array.isArray(custom) && custom.some(step => step !== 1);
+                MUSICALMODES["custom"] = new Array(edo).fill(1);
+                const warningKey = wasDefined ? custom.join(",") + "@" + edo : null;
+                if (wasDefined && !warnedCustomModeResets.has(warningKey)) {
+                    warnedCustomModeResets.add(warningKey);
+                    activity.errorMsg(
+                        _("The custom mode does not fit the new tuning, so it was reset.")
+                    );
+                }
+            }
+        }
+    };
+}
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { setupIntervalsActions };
+}

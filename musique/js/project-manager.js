@@ -1,0 +1,2041 @@
+// Copyright (c) 2014-22 Walter Bender
+// Copyright (c) Yash Khandelwal, GSoC'15
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+
+/* global
+   _THIS_IS_MUSIC_BLOCKS_,
+   DATAOBJS,
+   ErrorHandler,
+   doSVG,
+   _,
+   pubsub,
+   Midi,
+   ABCJS,
+   ensureABCJS,
+   extractProjectDataFromHTML,
+   unescapeHTML,
+   isSafeUrl,
+   getTemperament,
+   getOctaveRatio,
+   debugLog,
+   platformColor,
+   transcribeMidi,
+   base64Encode,
+   require
+*/
+
+/* exported setupProjectManager, ProjectManager */
+
+const _STANDARD_DURATIONS = [
+    { value: "1/1", duration: 1 },
+    { value: "1/2", duration: 0.5 },
+    { value: "1/4", duration: 0.25 },
+    { value: "1/8", duration: 0.125 },
+    { value: "1/16", duration: 0.0625 },
+    { value: "1/32", duration: 0.03125 },
+    { value: "1/64", duration: 0.015625 },
+    { value: "1/128", duration: 0.0078125 }
+];
+
+// Query parameters the app answers to, lowercased so matching stays
+// case-insensitive. start() acts on id, file, run, show, collapse and inurl.
+// The rest belong to other modules -- release config (music, turtle), the
+// debug log, the performance tracker, the loader, the sampler backend and the
+// save-to-URL block -- and are listed here only so that their links do not
+// trip the unknown-parameter warning.
+const _KNOWN_URL_PARAMS = new Set([
+    "backend",
+    "backend_url",
+    "collapse",
+    "debug",
+    "file",
+    "id",
+    "inurl",
+    "kokoro",
+    "layoutprofiling",
+    "mbperf",
+    "music",
+    "outurl",
+    "performance",
+    "repo",
+    "run",
+    "show",
+    "turtle"
+]);
+
+// How long startup will wait on the document named by "inurl" before giving
+// up on it and loading the project without an initial argument.
+const _ENV_ARG_TIMEOUT = 10000;
+
+const MAX_MXL_ARCHIVE_SIZE = 20 * 1024 * 1024;
+const _MAX_MXL_SCORE_SIZE = 20 * 1024 * 1024;
+const _MAX_MXL_CONTAINER_SIZE = 1024 * 1024;
+const _ZIP_EOCD_SIGNATURE = 0x06054b50;
+const _ZIP_CENTRAL_SIGNATURE = 0x02014b50;
+const _ZIP_LOCAL_SIGNATURE = 0x04034b50;
+const _isArrayBuffer = value => Object.prototype.toString.call(value) === "[object ArrayBuffer]";
+
+// A project is a list of blocks. A block is a list with its connections list at index 4;
+// the loader drops anything else. An empty list is an empty project.
+const _isProjectData = data =>
+    Array.isArray(data) &&
+    (data.length === 0 || data.some(entry => Array.isArray(entry) && Array.isArray(entry[4])));
+
+const _CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
+    let value = index;
+    for (let bit = 0; bit < 8; bit++) {
+        value = value & 1 ? (value >>> 1) ^ 0xedb88320 : value >>> 1;
+    }
+    return value >>> 0;
+});
+
+const _crc32 = bytes => {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+        crc = _CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+};
+
+const _findZipEntries = bytes => {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const minimumEOCDOffset = Math.max(0, bytes.length - 22 - 0xffff);
+    let eocdOffset = -1;
+
+    for (let offset = bytes.length - 22; offset >= minimumEOCDOffset; offset--) {
+        if (
+            view.getUint32(offset, true) === _ZIP_EOCD_SIGNATURE &&
+            offset + 22 + view.getUint16(offset + 20, true) === bytes.length
+        ) {
+            eocdOffset = offset;
+            break;
+        }
+    }
+    if (eocdOffset < 0) {
+        throw new Error("Invalid compressed MusicXML archive.");
+    }
+
+    const diskNumber = view.getUint16(eocdOffset + 4, true);
+    const centralDiskNumber = view.getUint16(eocdOffset + 6, true);
+    const entriesOnDisk = view.getUint16(eocdOffset + 8, true);
+    const entryCount = view.getUint16(eocdOffset + 10, true);
+    const centralSize = view.getUint32(eocdOffset + 12, true);
+    const centralOffset = view.getUint32(eocdOffset + 16, true);
+
+    if (
+        diskNumber !== 0 ||
+        centralDiskNumber !== 0 ||
+        entriesOnDisk !== entryCount ||
+        entryCount === 0xffff ||
+        centralSize === 0xffffffff ||
+        centralOffset === 0xffffffff ||
+        centralOffset + centralSize > eocdOffset
+    ) {
+        throw new Error("Unsupported compressed MusicXML archive.");
+    }
+
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const entries = [];
+    const centralEnd = centralOffset + centralSize;
+    let offset = centralOffset;
+
+    for (let index = 0; index < entryCount; index++) {
+        if (offset + 46 > centralEnd || view.getUint32(offset, true) !== _ZIP_CENTRAL_SIGNATURE) {
+            throw new Error("Invalid compressed MusicXML archive.");
+        }
+
+        const flags = view.getUint16(offset + 8, true);
+        const method = view.getUint16(offset + 10, true);
+        const crc = view.getUint32(offset + 16, true);
+        const compressedSize = view.getUint32(offset + 20, true);
+        const uncompressedSize = view.getUint32(offset + 24, true);
+        const nameLength = view.getUint16(offset + 28, true);
+        const extraLength = view.getUint16(offset + 30, true);
+        const commentLength = view.getUint16(offset + 32, true);
+        const diskStart = view.getUint16(offset + 34, true);
+        const localHeaderOffset = view.getUint32(offset + 42, true);
+        const entryEnd = offset + 46 + nameLength + extraLength + commentLength;
+
+        if (
+            entryEnd > centralEnd ||
+            diskStart !== 0 ||
+            compressedSize === 0xffffffff ||
+            uncompressedSize === 0xffffffff ||
+            localHeaderOffset === 0xffffffff
+        ) {
+            throw new Error("Unsupported compressed MusicXML archive.");
+        }
+
+        const name = decoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+        entries.push({
+            name,
+            flags,
+            method,
+            crc,
+            compressedSize,
+            uncompressedSize,
+            localHeaderOffset
+        });
+        offset = entryEnd;
+    }
+
+    return { entries, view };
+};
+
+const _readZipEntry = async (bytes, view, entry, maxSize) => {
+    if (entry.flags & 1 || entry.uncompressedSize > maxSize) {
+        throw new Error("Compressed MusicXML entry is encrypted or too large.");
+    }
+    if (entry.method !== 0 && entry.method !== 8) {
+        throw new Error("Unsupported compression in MusicXML archive.");
+    }
+
+    const localOffset = entry.localHeaderOffset;
+    if (
+        localOffset + 30 > bytes.length ||
+        view.getUint32(localOffset, true) !== _ZIP_LOCAL_SIGNATURE
+    ) {
+        throw new Error("Invalid compressed MusicXML archive.");
+    }
+
+    const localFlags = view.getUint16(localOffset + 6, true);
+    const localMethod = view.getUint16(localOffset + 8, true);
+    const nameLength = view.getUint16(localOffset + 26, true);
+    const extraLength = view.getUint16(localOffset + 28, true);
+    const dataOffset = localOffset + 30 + nameLength + extraLength;
+    const dataEnd = dataOffset + entry.compressedSize;
+
+    if (localFlags !== entry.flags || localMethod !== entry.method || dataEnd > bytes.length) {
+        throw new Error("Invalid compressed MusicXML archive.");
+    }
+
+    const compressed = bytes.subarray(dataOffset, dataEnd);
+    let output;
+    if (entry.method === 0) {
+        if (entry.compressedSize !== entry.uncompressedSize) {
+            throw new Error("Invalid compressed MusicXML archive.");
+        }
+        output = compressed;
+    } else {
+        if (typeof DecompressionStream !== "function") {
+            throw new Error("This browser cannot decompress MusicXML archives.");
+        }
+        const stream = new Blob([compressed])
+            .stream()
+            .pipeThrough(new DecompressionStream("deflate-raw"));
+        const reader = stream.getReader();
+        const chunks = [];
+        let totalSize = 0;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalSize += value.byteLength;
+            if (totalSize > maxSize || totalSize > entry.uncompressedSize) {
+                throw new Error("Compressed MusicXML entry is too large.");
+            }
+            chunks.push(value);
+        }
+
+        output = new Uint8Array(totalSize);
+        let outputOffset = 0;
+        for (const chunk of chunks) {
+            output.set(chunk, outputOffset);
+            outputOffset += chunk.byteLength;
+        }
+    }
+
+    if (output.byteLength !== entry.uncompressedSize || _crc32(output) !== entry.crc) {
+        throw new Error("Corrupt compressed MusicXML entry.");
+    }
+    return output;
+};
+
+const extractMXMLFromMXL = async archive => {
+    const bytes = _isArrayBuffer(archive)
+        ? new Uint8Array(archive)
+        : ArrayBuffer.isView(archive)
+          ? new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength)
+          : null;
+    if (!bytes || bytes.byteLength === 0 || bytes.byteLength > MAX_MXL_ARCHIVE_SIZE) {
+        throw new Error("Compressed MusicXML archive is empty or exceeds the 20 MiB limit.");
+    }
+
+    const { entries, view } = _findZipEntries(bytes);
+    const containerEntry = entries.find(entry => entry.name === "META-INF/container.xml");
+    if (!containerEntry) {
+        throw new Error("MusicXML archive is missing META-INF/container.xml.");
+    }
+
+    const containerBytes = await _readZipEntry(
+        bytes,
+        view,
+        containerEntry,
+        _MAX_MXL_CONTAINER_SIZE
+    );
+    const containerXML = new TextDecoder("utf-8", { fatal: true }).decode(containerBytes);
+    const containerDocument = new DOMParser().parseFromString(containerXML, "application/xml");
+    if (containerDocument.getElementsByTagName("parsererror").length > 0) {
+        throw new Error("Invalid MusicXML archive container.");
+    }
+
+    const rootfiles = containerDocument.getElementsByTagNameNS("*", "rootfile");
+    const rootfile = rootfiles.length
+        ? rootfiles[0]
+        : containerDocument.getElementsByTagName("rootfile")[0];
+    const scorePath = rootfile && rootfile.getAttribute("full-path");
+    if (!scorePath || scorePath.startsWith("/") || scorePath.split("/").includes("..")) {
+        throw new Error("MusicXML archive does not identify a valid score file.");
+    }
+
+    const scoreEntry = entries.find(entry => entry.name === scorePath);
+    if (!scoreEntry) {
+        throw new Error("MusicXML score file is missing from the archive.");
+    }
+    const scoreBytes = await _readZipEntry(bytes, view, scoreEntry, _MAX_MXL_SCORE_SIZE);
+    return new TextDecoder("utf-8", { fatal: true }).decode(scoreBytes);
+};
+
+class ProjectManager {
+    constructor(activity) {
+        this.activity = activity;
+        this._loadAnimationIntervalId = null;
+        this._saveAfterLoad = () => this.saveLocally();
+    }
+
+    // -----------------------------------------------------------------------
+    // Loading animation
+    // -----------------------------------------------------------------------
+
+    doLoadAnimation() {
+        const messages = {
+            load_messages: [
+                _("Catching mice"),
+                _("Cleaning the instruments"),
+                _("Testing key pieces"),
+                _("Sight-reading"),
+                _("Combining math and music"),
+                _("Generating more blocks"),
+                _("Do Re Mi Fa Sol La Ti Do"),
+                _("Tuning string instruments"),
+                _("Pressing random keys")
+            ]
+        };
+
+        document.getElementById("load-container").style.display = "block";
+
+        let counter = 0;
+
+        const changeText = () => {
+            const randomLoadMessage =
+                messages.load_messages[Math.floor(Math.random() * messages.load_messages.length)];
+            document.getElementById("messageText").textContent = randomLoadMessage + "...";
+            counter++;
+            if (counter >= messages.load_messages.length) {
+                counter = 0;
+            }
+        };
+
+        this._loadAnimationIntervalId = setInterval(changeText, 2000);
+    }
+
+    stopLoadAnimation() {
+        if (this._loadAnimationIntervalId !== null) {
+            clearInterval(this._loadAnimationIntervalId);
+            this._loadAnimationIntervalId = null;
+        }
+        const loadContainer = document.getElementById("load-container");
+        if (loadContainer) {
+            loadContainer.style.display = "none";
+        }
+    }
+
+    showContents() {
+        clearInterval(window.intervalId);
+        document.getElementById("loadingText").textContent = _("Loading Complete!");
+
+        setTimeout(() => {
+            const loadingText = document.getElementById("loadingText");
+            if (loadingText) loadingText.textContent = null;
+
+            const loadingImageContainer = document.getElementById("loading-image-container");
+            if (loadingImageContainer) loadingImageContainer.style.display = "none";
+
+            const loadContainer = document.getElementById("load-container");
+            if (loadContainer) loadContainer.style.display = "none";
+
+            const bottomRightLogo = document.getElementById("bottom-right-logo");
+            if (bottomRightLogo) bottomRightLogo.style.display = "none";
+
+            const palette = document.getElementById("palette");
+            if (palette) palette.style.display = "block";
+
+            const hideContents = document.getElementById("hideContents");
+            if (hideContents) hideContents.style.display = "block";
+
+            const btnBottom = document.getElementById("buttoncontainerBOTTOM");
+            if (btnBottom) btnBottom.style.display = "block";
+
+            const btnTop = document.getElementById("buttoncontainerTOP");
+            if (btnTop) btnTop.style.display = "block";
+        }, 500);
+    }
+
+    // -----------------------------------------------------------------------
+    // Load-start orchestration
+    // -----------------------------------------------------------------------
+
+    async loadStartWrapper(func, arg1, arg2, arg3) {
+        await func(this.activity, arg1, arg2, arg3);
+        this.showContents();
+    }
+
+    justLoadStart() {
+        this.activity.blocks.loadNewBlocks(DATAOBJS);
+    }
+
+    async _loadStart(that) {
+        if (!that) that = this.activity;
+
+        const __afterLoad = async () => {
+            if (!that.turtles.running()) {
+                /* istanbul ignore next -- _loadStart's __afterLoad runs post-project-load in a browser-only path; inaccessible from Jest */
+                that.stage.update();
+                for (let turtle = 0; turtle < that.turtles.getTurtleCount(); turtle++) {
+                    that.logo.turtleHeaps[turtle] = [];
+                    that.logo.turtleDicts[turtle] = {};
+                    that.logo.notation.notationStaging[turtle] = [];
+                    that.logo.notation.notationDrumStaging[turtle] = [];
+                    that.turtles.getTurtle(turtle).painter.doClear(true, true, false);
+                }
+                if (_THIS_IS_MUSIC_BLOCKS_) {
+                    const imgUrl =
+                        "data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+IDxzdmcgeG1sbnM6ZGM9Imh0dHA6Ly9wdXJsLm9yZy9kYy9lbGVtZW50cy8xLjEvIiB4bWxuczpjYz0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjIiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgaWQ9InN2ZzExMjEiIHZlcnNpb249IjEuMSIgdmlld0JveD0iMCAwIDM0LjEzMTI0OSAxNC41NTIwODkiIGhlaWdodD0iNTUuMDAwMDE5IiB3aWR0aD0iMTI5Ij4gPGRlZnMgaWQ9ImRlZnMxMTE1Ij4gPGNsaXBQYXRoIGlkPSJjbGlwUGF0aDQzMzciIGNsaXBQYXRoVW5pdHM9InVzZXJTcGFjZU9uVXNlIj4gPHJlY3QgeT0iNTUyIiB4PSI1ODgiIGhlaWdodD0iMTQzNiIgd2lkdGg9IjE5MDAiIGlkPSJyZWN0NDMzOSIgc3R5bGU9ImZpbGw6I2EzYjVjNDtmaWxsLW9wYWNpdHk6MTtzdHJva2U6bm9uZTtzdHJva2Utd2lkdGg6MTU7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLWxpbmVqb2luOnJvdW5kO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLWRhc2hhcnJheTpub25lO3N0cm9rZS1vcGFjaXR5OjEiIC8+IDwvY2xpcFBhdGg+IDwvZGVmcz4gPG1ldGFkYXRhIGlkPSJtZXRhZGF0YTExMTgiPiA8cmRmOlJERj4gPGNjOldvcmsgcmRmOmFib3V0PSIiPiA8ZGM6Zm9ybWF0PmltYWdlL3N2Zyt4bWw8L2RjOmZvcm1hdD4gPGRjOnR5cGUgcmRmOnJlc291cmNlPSJodHRwOi8vcHVybC5vcmcvZGMvZGNtaXR5cGUvU3RpbGxJbWFnZSIgLz4gPGRjOnRpdGxlPjwvZGM6dGl0bGU+IDwvY2M6V29yaz4gPC9yZGY6UkRGPiA8L21ldGFkYXRhPiA8ZyB0cmFuc2Zvcm09Im1hdHJpeCgxLjA4Njc4MiwwLDAsMS4wODY3ODIsLTEuNTQ3MzI0NSwtMS4zMDU3OTkpIiBpZD0iZzE4MTIiPiA8ZWxsaXBzZSB0cmFuc2Zvcm09Im1hdHJpeCgwLjAxMDQ2MDk5LDAsMCwwLjAxMDQ2MDk5LDEuMDE2NzM4OSwtNi4yMDQ4NTI5KSIgY2xpcC1wYXRoPSJ1cmwoI2NsaXBQYXRoNDMzNykiIHJ5PSI3NjgiIHJ4PSI3NDgiIGN5PSIxNDc2IiBjeD0iMTU0MCIgaWQ9InBhdGg0MzMzIiBzdHlsZT0iZGlzcGxheTppbmxpbmU7ZmlsbDojYTNiNWM0O2ZpbGwtb3BhY2l0eToxO3N0cm9rZTpub25lO3N0cm9rZS13aWR0aDoxNTtzdHJva2UtbGluZWNhcDpyb3VuZDtzdHJva2UtbGluZWpvaW46cm91bmQ7c3Ryb2tlLW1pdGVybGltaXQ6NDtzdHJva2UtZGFzaGFycmF5Om5vbmU7c3Ryb2tlLW9wYWNpdHk6MSIgLz4gPGVsbGlwc2Ugcnk9IjEuNzgyNjg1OSIgcng9IjEuNjkzOTIxNiIgY3k9IjguODM0MzUzNCIgY3g9IjE2LjQ0NjczOSIgaWQ9InBhdGg0MjU2IiBzdHlsZT0iZGlzcGxheTppbmxpbmU7ZmlsbDojYzlkYWQ4O2ZpbGwtb3BhY2l0eToxO3N0cm9rZTojYzlkYWQ4O3N0cm9rZS13aWR0aDowLjEwNDYwOTk7c3Ryb2tlLWxpbmVjYXA6cm91bmQ7c3Ryb2tlLWxpbmVqb2luOnJvdW5kO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLWRhc2hhcnJheTpub25lO3N0cm9rZS1vcGFjaXR5OjEiIC8+IDxwYXRoIGlkPSJwYXRoNDMyOCIgZD0ibSAxNy42MzAyNjYsMTMuNDg3MDkgMC4zMjU0NywwLjM5MjA0NCAwLjM0NzY2LDAuMjczNjkgMC4zMTA2NzYsMC4xMTA5NTUgMC4yMzY3MDUsLTAuMDUxNzggMC4xNDA1NDQsLTAuMTg0OTI2IDAuMTk5NzIsMC4wODEzNyAwLjE1NTMzOCwwLjA0NDM4IDAuNjEzOTU0LC0wLjQyMTYzMiAwLjQyMTYzMSwtMC4yNTE0OTkgYyAwLDAgMC44ODc2NDUsLTAuMDA3NCAxLjYwNTE1NywtMC41NTQ3NzcgMC43MTc1MTMsLTAuNTQ3MzgxIDAuNDk1NjAyLC0wLjY1MDkzOSAwLjQ5NTYwMiwtMC42NTA5MzkgbCAtMC4wMzY5OSwtMC40MjkwMjkgLTAuNTM5OTg0LC0wLjcxNzUxMyAtMC41NTQ3NzcsLTAuNTY5NTcxIC0wLjIyOTMwOSwtMC4xNDc5NDEgYyAwLDAgLTAuMDIyMTksLTAuMDQ0MzggLTAuMDczOTcsLTAuMDQ0MzggLTAuMDUxNzgsMCAtMC4yNDQxMDMsLTAuMDczOTcgLTAuNTE3NzkzLDAuMDQ0MzggLTAuMjczNjkxLDAuMTE4MzUzIC0wLjQ2NjAxNCwwLjE3MDEzMiAtMC44NDMyNjMsMC4zODQ2NDYgLTAuMzc3MjQ4LDAuMjE0NTE0IC0wLjcxMDExNSwwLjQyMTYzMSAtMC44MzU4NjUsMC40OTU2MDIgLTAuMTI1NzUsMC4wNzM5NyAtMC43NDcxLDAuNDI5MDI4IC0wLjc0NzEsMC40MjkwMjggbCAtMC4wOTYxNiwwLjY1ODMzNiB6IiBzdHlsZT0iZGlzcGxheTppbmxpbmU7ZmlsbDojZjhmOGY4O2ZpbGwtb3BhY2l0eToxO2ZpbGwtcnVsZTpldmVub2RkO3N0cm9rZTpub25lO3N0cm9rZS13aWR0aDowLjAxMDQ2MDk5cHg7c3Ryb2tlLWxpbmVjYXA6YnV0dDtzdHJva2UtbGluZWpvaW46bWl0ZXI7c3Ryb2tlLW9wYWNpdHk6MSIgLz4gPHBhdGggaWQ9InBhdGg0MzMwIiBkPSJtIDE4LjA4MTQ4NSwxMy4xMTcyMzkgYyAwLDAgMS4wMTcyMDIsMC4yMTk4MDggMS40OTA2MTMsLTAuMTM1MjUgMC42ODI1NSwtMC42NzQwOTcgMS42NTU4OTMsLTEuMTU0NzMxIDEuODcwMzU1LC0xLjc0NTMwOCAwLjEwODI1NywtMC4yOTgxMTYgMC4wOTI2NSwtMC4zNzIzNzcgLTAuMDgwMTgsLTAuNjM3MTkxIC0wLjc4NDA4NSwtMS4xMTY5NTIzIC0yLjE4NjAyMywwLjQ4MzU2MyAtMi4xODYwMjMsMC40ODM1NjMgbCAtMS4yMjA1MTEsMS4wNDI5ODMgeiIgc3R5bGU9ImRpc3BsYXk6aW5saW5lO2ZpbGw6I2M5ZGFkODtmaWxsLW9wYWNpdHk6MTtmaWxsLXJ1bGU6ZXZlbm9kZDtzdHJva2U6bm9uZTtzdHJva2Utd2lkdGg6MC4wMTA0NjA5OXB4O3N0cm9rZS1saW5lY2FwOmJ1dHQ7c3Ryb2tlLWxpbmVqb2luOm1pdGVyO3N0cm9rZS1vcGFjaXR5OjEiIC8+IDxwYXRoIGlkPSJwYXRoNDI4MSIgZD0ibSAxOC45MjM2MzgsMTEuOTExMTY2IGMgMCwwIC0yLjI2MjA3MywwLjM2MDA3MyAtMS4yNDU4MDcsMS42MzE0MjYgMS4wMTYyNjgsMS4yNzEzNTQgMS4zMzE1OSwwLjQ2ODQxNSAxLjMzMTU5LDAuNDY4NDE1IDAsMCAwLjIzNzM2NCwwLjI4NDAyMSAwLjU1MDIyMSwtMC4wMTI4OSAwLjMxMjg1NywtMC4yOTY5MSAwLjgwMTY1NywtMC40ODY1NjMgMC44MDE2NTcsLTAuNDg2NTYzIDAsMCAwLjgzMzQxOSwtMC4wODE1OCAxLjcyODg1MSwtMC42NDAzNDUgMC44OTU0MzIsLTAuNTU4NzY5IDAuMDI1NDUsLTEuNDk0NjQ0IDAuMDI1NDUsLTEuNDk0NjQ0IDAsMCAtMC43MDQwMDIsLTAuOTE0MzA1IC0xLjE5MTE1OCwtMS4wNjIwMDQgLTAuNDg3MTU1LC0wLjE0NzY5OSAtMS4yNjAyMDYsLTAuMjA1OTYzIC0xLjI2MDIwNiwtMC4yMDU5NjMgeiIgc3R5bGU9ImRpc3BsYXk6aW5saW5lO2ZpbGw6bm9uZTtmaWxsLW9wYWNpdHk6MTtmaWxsLXJ1bGU6ZXZlbm9kZDtzdHJva2U6IzUwNTA1MDtzdHJva2Utd2lkdGg6MC4xMDQ2MDk5O3N0cm9rZS1saW5lY2FwOmJ1dHQ7c3Ryb2tlLWxpbmVqb2luOm1pdGVyO3N0cm9rZS1taXRlcmxpbWl0OjQ7c3Ryb2tlLWRhc2hhcnJheTpub25lO3N0cm9rZS1vcGFjaXR5OjEiIC8+IDwvZz4gPC9zdmc+";
+
+                    console.log(
+                        "%cMusic Blocks",
+                        "font-size: 24px; font-weight: bold; font-family: sans-serif; padding:20px 0 0 110px; background: url(" +
+                            imgUrl +
+                            ") no-repeat;"
+                    );
+
+                    console.log(
+                        "%cMusic Blocks is a collection of tools for exploring fundamental musical concepts in a fun way.",
+                        "font-size: 16px; font-family: sans-serif; font-weight: bold;"
+                    );
+                } else {
+                    console.log(
+                        "%cTurtle Blocks is a collection of tools for exploring  concepts from Logo in a fun way.",
+                        "font-size: 16px; font-family: sans-serif; font-weight: bold;"
+                    );
+                }
+            }
+            that.keyboardEnableFlag = 1;
+
+            pubsub.off("finishedLoading", __afterLoad);
+        };
+
+        that.keyboardEnableFlag = 0;
+
+        that.sessionData = null;
+        let sessionSource = null;
+        let currentProject = "My Project";
+        try {
+            currentProject = (that.storage && that.storage.currentProject) || "My Project";
+        } catch (e) {
+            currentProject = "My Project";
+        }
+        const sessionKey = "SESSION" + currentProject;
+        const sessionTimestampKey = "SESSION_TIMESTAMP" + currentProject;
+
+        let idbPayload = null;
+        if (that.sessionStorageManager) {
+            try {
+                idbPayload = await that.sessionStorageManager.loadSession(sessionKey);
+            } catch (e) {
+                console.error("Failed to load session from IndexedDB:", e);
+            }
+        }
+
+        let localData = null;
+        let localTimestamp = 0;
+        try {
+            if (that.storage) {
+                localData = that.storage[sessionKey] || null;
+                let localTimestampStr = that.storage[sessionTimestampKey];
+                let parsedLocalTimestamp = localTimestampStr ? parseInt(localTimestampStr, 10) : 0;
+                localTimestamp = Number.isFinite(parsedLocalTimestamp) ? parsedLocalTimestamp : 0;
+            }
+        } catch (storageReadErr) {
+            console.warn(
+                "[ProjectManager] Failed to read session from local storage:",
+                storageReadErr
+            );
+            localData = null;
+            localTimestamp = 0;
+        }
+
+        if (that.planet) {
+            that.sessionData = await that.planet.openCurrentProject();
+            if (that.sessionData) {
+                sessionSource = "planet";
+            } else {
+                if (idbPayload && idbPayload.data) {
+                    if (!localData || idbPayload.timestamp >= localTimestamp) {
+                        that.sessionData = idbPayload.data;
+                        sessionSource = "idb";
+                    } else {
+                        that.sessionData = localData;
+                        sessionSource = "local";
+                    }
+                } else if (localData) {
+                    that.sessionData = localData;
+                    sessionSource = "local";
+                }
+            }
+            // Fix #1+#4: Restore Git state keys if repo data exists in Planet storage
+            try {
+                const repoData =
+                    that.planet.getCurrentGitRepoData && that.planet.getCurrentGitRepoData();
+                if (repoData && repoData.repoName) {
+                    that.storage.mbGitRepoName = repoData.repoName;
+                    that.storage.mbGitHashedKey = repoData.hashedKey || "";
+                    that.storage.mbGitCurrentProjectId = repoData.projectId || "";
+                    if (repoData.displayName) {
+                        that.storage.mbGitDisplayName = repoData.displayName;
+                    }
+                }
+            } catch (gitRestoreErr) {
+                console.warn(
+                    "[ProjectManager] Could not restore git session state:",
+                    gitRestoreErr
+                );
+            }
+        } else {
+            if (idbPayload && idbPayload.data) {
+                if (!localData || idbPayload.timestamp >= localTimestamp) {
+                    that.sessionData = idbPayload.data;
+                    sessionSource = "idb";
+                } else {
+                    that.sessionData = localData;
+                    sessionSource = "local";
+                }
+            } else if (localData) {
+                that.sessionData = localData;
+                sessionSource = "local";
+            }
+        }
+
+        pubsub.on("finishedLoading", __afterLoad);
+
+        // Returns the loadToken loadNewBlocks() assigns this request (see
+        // js/blocks.js), or null when no load was actually started (the
+        // empty/undefined-session shortcuts below already route through
+        // justLoadStart() instead).
+        const tryParseAndLoad = data => {
+            if (data === "undefined" || data === "[]") {
+                that.justLoadStart();
+                return null;
+            }
+            const parsed = JSON.parse(data);
+            if (Array.isArray(parsed) && parsed.length === 0) {
+                // Any whitespace/formatting variant of "[]" (e.g. " [ ]")
+                // still parses to an empty array here, past the literal
+                // string check above. loadNewBlocks([]) completes
+                // synchronously inside blocks.js's own zero-block fast
+                // path, emitting "finishedLoading" before this call even
+                // returns — before a caller could register a watcher for
+                // it. Treating a parsed-empty array the same as the
+                // literal "[]" case keeps that synchronous emit from
+                // leaving watchForDeferredLoadFailure()'s listeners
+                // stranded (review comment on issue #8855's fix).
+                that.justLoadStart();
+                return null;
+            }
+            window.loadedSession = data;
+            return that.blocks.loadNewBlocks(parsed);
+        };
+
+        const deleteFromSource = async source => {
+            if (source === "idb") {
+                if (
+                    that.sessionStorageManager &&
+                    typeof that.sessionStorageManager.deleteSession === "function" &&
+                    sessionKey
+                ) {
+                    try {
+                        await that.sessionStorageManager.deleteSession(sessionKey);
+                    } catch (idbErr) {
+                        ErrorHandler.recoverable(idbErr, { operation: "removeBadIdbSessionKey" });
+                    }
+                }
+            } else if (source === "local") {
+                if (sessionKey !== null) {
+                    try {
+                        if (typeof that.storage.removeItem === "function") {
+                            that.storage.removeItem(sessionKey);
+                        } else {
+                            delete that.storage[sessionKey];
+                        }
+                    } catch (storageError) {
+                        ErrorHandler.recoverable(storageError, {
+                            operation: "removeBadSessionKey"
+                        });
+                    }
+                }
+            }
+        };
+
+        // A block-processing failure past the first ~20 blocks throws from
+        // inside loadNewBlocks()'s deferred setTimeout chunking
+        // (js/blocks.js), which no synchronous try/catch around
+        // tryParseAndLoad() below can ever observe: that throw has no
+        // caller left to reach (see issue #8855). loadNewBlocks() reports
+        // that case through this "loadFailed" pubsub event instead (the
+        // same channel "finishedLoading" already uses for success), so it
+        // can still reach the same delete-and-fallback recovery a
+        // synchronous failure gets below.
+        //
+        // Both events carry the loadToken loadNewBlocks() returned for the
+        // request they belong to (js/blocks.js), which is assigned the
+        // moment that request is made — whether it then runs immediately or
+        // sits queued behind another, unrelated load already in progress.
+        // Filtering on it (rather than just the event name) keeps this from
+        // reacting to that other load's own completion or failure, which a
+        // reviewer flagged: reading a "currently active load" counter after
+        // the fact isn't safe here, since this request may still be queued
+        // at that point.
+        const watchForDeferredLoadFailure = (source, expectedToken) => {
+            const belongsToThisLoad = payload =>
+                !payload || payload.token === undefined ? true : payload.token === expectedToken;
+            const stopWatching = () => {
+                pubsub.off("finishedLoading", onSucceeded);
+                pubsub.off("loadFailed", onFailed);
+            };
+            const onFailed = payload => {
+                if (!belongsToThisLoad(payload)) return;
+                stopWatching();
+                recoverFromLoadFailure(
+                    source,
+                    (payload && payload.error) || new Error("loadNewBlocks failed")
+                );
+            };
+            const onSucceeded = payload => {
+                if (!belongsToThisLoad(payload)) return;
+                stopWatching();
+            };
+            pubsub.on("finishedLoading", onSucceeded);
+            pubsub.on("loadFailed", onFailed);
+        };
+
+        // Runs the delete-and-fallback recovery for a failed session load,
+        // whether that failure was caught synchronously below or reported
+        // asynchronously via "loadFailed" above. Attempts at most one
+        // fallback (the same bound the original synchronous-only version of
+        // this logic had) so two independently bad storage tiers can't
+        // bounce off each other indefinitely.
+        let fallbackAttempted = false;
+        const recoverFromLoadFailure = async (failedSource, error) => {
+            ErrorHandler.recoverable(error, { operation: "loadSessionData" });
+            await deleteFromSource(failedSource);
+
+            // The failed load may have only partially populated blockList
+            // before it threw. Clear those leftover blocks before loading
+            // anything else, or the next attempt's blocks render on top of
+            // them instead of replacing them (reported against this fix).
+            if (typeof that.sendAllToTrash === "function") {
+                that.sendAllToTrash(false, false);
+            }
+
+            let fallbackData = null;
+            let fallbackSource = null;
+            if (!fallbackAttempted) {
+                if (failedSource === "idb" && localData) {
+                    fallbackData = localData;
+                    fallbackSource = "local";
+                } else if (failedSource === "local" && idbPayload && idbPayload.data) {
+                    fallbackData = idbPayload.data;
+                    fallbackSource = "idb";
+                }
+            }
+
+            if (fallbackData) {
+                fallbackAttempted = true;
+                try {
+                    that.sessionData = fallbackData;
+                    const loadToken = tryParseAndLoad(fallbackData);
+                    if (loadToken !== null) {
+                        watchForDeferredLoadFailure(fallbackSource, loadToken);
+                    }
+                    return;
+                } catch (fallbackErr) {
+                    ErrorHandler.recoverable(fallbackErr, {
+                        operation: "loadFallbackSessionData"
+                    });
+                    await deleteFromSource(fallbackSource);
+                }
+            }
+
+            that.errorMsg(_("Your saved project could not be loaded. Starting a new project."));
+            that.justLoadStart();
+        };
+
+        if (that.sessionData) {
+            that.doLoadAnimation();
+            try {
+                const loadToken = tryParseAndLoad(that.sessionData);
+                if (loadToken !== null) {
+                    watchForDeferredLoadFailure(sessionSource, loadToken);
+                }
+            } catch (e) {
+                await recoverFromLoadFailure(sessionSource, e);
+            }
+        } else {
+            that.justLoadStart();
+        }
+
+        that.update = true;
+    }
+
+    /**
+     * Clears the loading state after a project load attempt completes,
+     * successfully or not.
+     * @private
+     * @returns {void}
+     */
+    _finishLoading() {
+        this.activity.loading = false;
+        document.body.style.cursor = "default";
+        this.activity.update = true;
+    }
+
+    _loadProject(projectID, flags) {
+        const that = this.activity;
+
+        if (that.planet === undefined) {
+            return;
+        }
+
+        flags =
+            typeof flags !== "undefined"
+                ? flags
+                : {
+                      run: false,
+                      show: false,
+                      collapse: false
+                  };
+        that.loading = true;
+        document.body.style.cursor = "wait";
+        that.doLoadAnimation();
+
+        try {
+            const projectName =
+                that.planet && typeof that.planet.getCurrentProjectName === "function"
+                    ? that.planet.getCurrentProjectName()
+                    : _("My Project");
+            that.textMsg(projectName);
+        } catch (e) {
+            ErrorHandler.recoverable(e, { operation: "loadProjectName" });
+            that.textMsg(_("My Project"));
+        }
+
+        const pm = this;
+        setTimeout(() => {
+            try {
+                if (that.planet && typeof that.planet.openProjectFromPlanet === "function") {
+                    that.planet.openProjectFromPlanet(projectID, () => {
+                        that.loadStartWrapper((act, ...args) => pm._loadStart(act, ...args));
+                    });
+                } else {
+                    throw new Error("Planet openProjectFromPlanet is unavailable.");
+                }
+            } catch (e) {
+                ErrorHandler.recoverable(e, { operation: "openProjectFromPlanet" });
+                that.loadStartWrapper((act, ...args) => pm._loadStart(act, ...args));
+            }
+
+            if (that.planet && typeof that.planet.initialiseNewProject === "function") {
+                try {
+                    that.planet.initialiseNewProject();
+                } catch (e) {
+                    ErrorHandler.recoverable(e, { operation: "planetInitialiseNewProject" });
+                }
+            } else {
+                ErrorHandler.warn("Planet initialiseNewProject is unavailable.", {
+                    operation: "loadFromPlanet"
+                });
+            }
+
+            pm._finishLoading();
+        }, 2500);
+
+        const run = flags.run;
+        const show = flags.show;
+        const collapse = flags.collapse;
+
+        const __functionload = () => {
+            setTimeout(() => {
+                if (!collapse && that.firstRun) {
+                    that._toggleCollapsibleStacks();
+                }
+
+                if (run && that.firstRun) {
+                    for (let turtle = 0; turtle < that.turtles.getTurtleCount(); turtle++) {
+                        that.turtles.getTurtle(turtle).painter.doClear(true, true, false);
+                    }
+
+                    that.textMsg(_("Click the run button to run the project."));
+
+                    if (show) {
+                        that._changeBlockVisibility();
+                    }
+
+                    if (!collapse) {
+                        that._toggleCollapsibleStacks();
+                    }
+                } else if (!show) {
+                    that._changeBlockVisibility();
+                }
+
+                pubsub.off("finishedLoading", __functionload);
+                that.firstRun = false;
+            }, 1000);
+        };
+
+        pubsub.on("finishedLoading", __functionload);
+    }
+
+    loadFromPlanet(projectID, flags, env) {
+        return this._loadProject(projectID, flags, env);
+    }
+
+    // -----------------------------------------------------------------------
+    // New project
+    // -----------------------------------------------------------------------
+
+    _afterDelete() {
+        const that = this.activity;
+        const pm = this;
+
+        if (that.turtles.running()) {
+            that._doHardStopButton();
+        }
+
+        // Clear the Git tracking for the new project — mirrors the
+        // same cleanup done in activity.js _afterDelete (which is only
+        // reached via a different code path).
+        const gitKeys = [
+            "mbGitRepoName",
+            "mbGitHashedKey",
+            "mbGitDisplayName",
+            "mbGitLastSavedHash",
+            "mbGitCurrentSha",
+            "mbGitCurrentDraftId",
+            "mbGitCurrentProjectId"
+        ];
+        for (const key of gitKeys) {
+            if (typeof that.storage.removeItem === "function") {
+                that.storage.removeItem(key);
+            } else {
+                delete that.storage[key];
+            }
+        }
+        if (that.gitDropdownUI && typeof that.gitDropdownUI.clearForNewProject === "function") {
+            that.gitDropdownUI.clearForNewProject();
+        } else if (that.gitDropdownUI && typeof that.gitDropdownUI._syncMenuState === "function") {
+            that.gitDropdownUI._syncMenuState();
+        }
+
+        if (
+            that.planet !== undefined &&
+            that.planet.planet !== null &&
+            that.planet.getCurrentProjectName() !== _("My Project")
+        ) {
+            // Save the current project before switching away from it.
+            that.planet.saveLocally();
+            // Create the new project slot and clear the canvas synchronously.
+            that.planet.initialiseNewProject();
+            // _loadStart is async: it fires loadNewBlocks and then emits
+            // "finishedLoading". We save the NEW project only after that
+            // event fires so we capture the fresh start blocks, not stale data.
+            const loadPromise = pm._loadStart(that);
+            if (loadPromise && typeof loadPromise.then === "function") {
+                loadPromise
+                    .then(() => {
+                        that.planet.saveLocally();
+                    })
+                    .catch(() => {
+                        // Best-effort — ignore if _loadStart rejects unexpectedly.
+                        that.planet.saveLocally();
+                    });
+            } else {
+                that.planet.saveLocally();
+            }
+        } else {
+            that.toolbar.closeAuxToolbar((act, resize) => act._showHideAuxMenu(resize));
+
+            setTimeout(() => {
+                that.sendAllToTrash(false, false);
+                that.blocks.loadNewBlocks(DATAOBJS);
+            }, 1000);
+        }
+    }
+
+    newProject() {
+        this._afterDelete();
+    }
+
+    // -----------------------------------------------------------------------
+    // File loading (chooser + merge)
+    // -----------------------------------------------------------------------
+
+    _doLoad(merge) {
+        const that = this.activity;
+
+        that.toolbar.closeAuxToolbar((act, resize) => act._showHideAuxMenu(resize));
+        if (merge === undefined) {
+            merge = false;
+        }
+
+        if (merge) {
+            that.merging = true;
+        } else {
+            that.merging = false;
+        }
+
+        document.querySelector("#myOpenFile").focus();
+        document.querySelector("#myOpenFile").click();
+        window.scroll(0, 0);
+        that._doHardStopButton();
+    }
+
+    doLoad() {
+        this._doLoad(false);
+    }
+
+    doMergeLoad() {
+        this._doLoad(true);
+    }
+
+    // -----------------------------------------------------------------------
+    // Export / save
+    // -----------------------------------------------------------------------
+
+    prepareExport() {
+        const activity = this.activity;
+        const blockMap = [];
+        const blockIndexById = new Map();
+        for (let blk = 0; blk < activity.blocks.blockList.length; blk++) {
+            const myBlock = activity.blocks.blockList[blk];
+            if (myBlock && myBlock.trash) {
+                continue;
+            } else if (!myBlock) {
+                continue;
+            }
+
+            blockIndexById.set(blk, blockMap.length);
+            blockMap.push(blk);
+        }
+
+        const restored = activity.logo.getRestoredConnections();
+        const data = [];
+        for (let blk = 0; blk < activity.blocks.blockList.length; blk++) {
+            const myBlock = activity.blocks.blockList[blk];
+            if (!myBlock || myBlock.trash) {
+                continue;
+            }
+
+            let args = null;
+            let exportName = myBlock.name;
+
+            if (myBlock.unknownBlock !== undefined) {
+                if (Array.isArray(myBlock.unknownBlock)) {
+                    exportName = myBlock.unknownBlock[0];
+                    args = myBlock.unknownBlock[1] ?? null;
+                } else {
+                    exportName = myBlock.unknownBlock;
+                }
+            } else if (
+                myBlock.isValueBlock() ||
+                myBlock.name === "loadFile" ||
+                myBlock.name === "boolean"
+            ) {
+                switch (myBlock.name) {
+                    case "namedbox":
+                    case "namedarg":
+                        args = {
+                            value: myBlock.privateData
+                        };
+                        break;
+                    default:
+                        args = {
+                            value: myBlock.value
+                        };
+                        if (
+                            myBlock.manualAccidental !== undefined &&
+                            myBlock.manualAccidental !== null
+                        ) {
+                            args.manualAccidental = myBlock.manualAccidental;
+                        }
+                }
+            } else {
+                switch (myBlock.name) {
+                    case "start":
+                    case "drum": {
+                        const turtle =
+                            myBlock.value !== null && myBlock.value !== undefined
+                                ? activity.turtles.getTurtle(myBlock.value)
+                                : null;
+                        if (turtle === null || turtle === undefined) {
+                            args = {
+                                id: activity.turtles.getTurtleCount(),
+                                collapsed: false,
+                                xcor: 0,
+                                ycor: 0,
+                                heading: 0,
+                                color: 0,
+                                shade: 50,
+                                pensize: 5,
+                                grey: 100
+                            };
+                        } else {
+                            args = {
+                                id: turtle.id,
+                                collapsed: myBlock.collapsed,
+                                xcor: turtle.x,
+                                ycor: turtle.y,
+                                heading: turtle.orientation,
+                                color: turtle.painter.color,
+                                shade: turtle.painter.value,
+                                pensize: turtle.painter.stroke,
+                                grey: turtle.painter.chroma
+                            };
+                        }
+                        break;
+                    }
+                    case "temperament1":
+                        if (activity.blocks.customTemperamentDefined) {
+                            let customName = "custom";
+                            if (myBlock.connections[1] !== null) {
+                                customName =
+                                    activity.blocks.blockList[myBlock.connections[1]].value;
+                            }
+
+                            debugLog(customName);
+                            args = {
+                                customName: customName,
+                                customTemperamentNotes: getTemperament(customName),
+                                startingPitch: activity.logo?.synth?.startingPitch || 392,
+                                octaveSpace: getOctaveRatio()
+                            };
+                        }
+                        break;
+                    case "interval":
+                    case "newnote":
+                    case "action":
+                    case "timbre":
+                    case "pitchstaircase":
+                    case "tempo":
+                    case "pitchslider":
+                    case "musickeyboard":
+                        args = {
+                            collapsed: myBlock.collapsed
+                        };
+                        break;
+                    case "rhythmruler2":
+                        args = {
+                            collapsed: myBlock.collapsed
+                        };
+                        // The edits made in the widget, keyed by drum block. Drop the drums
+                        // that are no longer in the project.
+                        if (Array.isArray(myBlock.rulerHistory)) {
+                            args.rulerHistory = myBlock.rulerHistory
+                                .filter(entry => blockIndexById.has(entry[1]))
+                                .map(entry => [entry[0], blockIndexById.get(entry[1])]);
+                        }
+                        break;
+                    case "matrix": {
+                        args = {
+                            collapsed: myBlock.collapsed
+                        };
+                        // The selected cells, as [row block, [rhythm block, n], j]. A row block
+                        // inside a repeat has 1000000 added for each pass, which is kept. Drop
+                        // the cells whose blocks are no longer in the project.
+                        const cells =
+                            activity.logo?.phraseMaker?._blockMap?.[blk] ?? myBlock.matrixCells;
+                        if (Array.isArray(cells)) {
+                            args.matrixCells = [];
+                            for (const [rowBlock, [rhythmBlock, n], j] of cells) {
+                                const row = rowBlock % 1000000;
+                                if (blockIndexById.has(row) && blockIndexById.has(rhythmBlock)) {
+                                    args.matrixCells.push([
+                                        blockIndexById.get(row) + rowBlock - row,
+                                        [blockIndexById.get(rhythmBlock), n],
+                                        j
+                                    ]);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    case "pitchdrummatrix":
+                        args = { collapsed: myBlock.collapsed };
+                        if (Array.isArray(myBlock.drumCells)) {
+                            args.drumCells = myBlock.drumCells
+                                .filter(
+                                    ([pitch, drum]) =>
+                                        blockIndexById.has(pitch) && blockIndexById.has(drum)
+                                )
+                                .map(([pitch, drum, repeat]) => [
+                                    blockIndexById.get(pitch),
+                                    blockIndexById.get(drum),
+                                    repeat
+                                ]);
+                        }
+                        break;
+                    case "storein2":
+                    case "nameddo":
+                    case "nameddoArg":
+                    case "namedcalc":
+                    case "namedcalcArg":
+                    case "outputtools":
+                        args = {
+                            value: myBlock.privateData
+                        };
+                        break;
+                    case "wrapmode":
+                        args = {
+                            value: myBlock.value
+                        };
+                        break;
+                    case "customsample":
+                        if (Array.isArray(myBlock.value)) {
+                            // The connected audiofile block already saves the sample data.
+                            const value = myBlock.value.slice();
+                            if (myBlock.connections[1] !== null) {
+                                value[1] = "";
+                            }
+                            args = { value: value };
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            const connections = [];
+            for (const connection of restored.get(blk) || myBlock.connections) {
+                const mapConnection = blockIndexById.get(connection);
+                if (connection === null || mapConnection === undefined) {
+                    connections.push(null);
+                } else {
+                    connections.push(mapConnection);
+                }
+            }
+
+            const blockIndex = blockIndexById.get(blk);
+            if (args === null) {
+                data.push([
+                    blockIndex,
+                    exportName,
+                    myBlock.container.x,
+                    myBlock.container.y,
+                    connections
+                ]);
+            } else {
+                data.push([
+                    blockIndex,
+                    [exportName, args],
+                    myBlock.container.x,
+                    myBlock.container.y,
+                    connections
+                ]);
+            }
+        }
+
+        return JSON.stringify(data);
+    }
+
+    saveLocally(options = {}) {
+        const activity = this.activity;
+
+        // Don't replace the saved session with a partly loaded project.
+        if (activity.blocks.isLoading()) {
+            activity.blocks.runAfterLoad(this._saveAfterLoad);
+            return;
+        }
+
+        const data = this.prepareExport();
+        const rejectOnProjectSaveError = options.rejectOnProjectSaveError === true;
+
+        if (activity.storage.currentProject === undefined) {
+            try {
+                activity.storage.currentProject = "My Project";
+                activity.storage.allProjects = JSON.stringify(["My Project"]);
+            } catch (e) {
+                ErrorHandler.recoverable(e, { operation: "saveLocally_setCurrentProject" });
+                if (rejectOnProjectSaveError) throw e;
+            }
+        }
+
+        let p = "";
+        try {
+            p = activity.storage.currentProject;
+            activity.storage["SESSION" + p] = data;
+            activity.storage["SESSION_TIMESTAMP" + p] = Date.now().toString();
+        } catch (e) {
+            // If it hits QuotaExceededError, it fails gracefully because saveSessionAsync
+            // (IndexedDB) handles large payloads.
+            console.warn("localStorage quota exceeded for SESSION. Relying on IndexedDB.", e);
+            ErrorHandler.recoverable(e, { operation: "saveLocally_saveSession" });
+            if (rejectOnProjectSaveError) throw e;
+        }
+
+        const img = new Image();
+        const svgData = doSVG(
+            activity.canvas,
+            activity.logo,
+            activity.turtles,
+            320,
+            240,
+            320 / activity.canvas.width
+        );
+
+        img.onload = () => {
+            try {
+                if (!img.naturalWidth || !img.naturalHeight) {
+                    return;
+                }
+
+                const w = img.naturalWidth;
+                const h = img.naturalHeight;
+                const offscreen = document.createElement("canvas");
+                offscreen.width = w;
+                offscreen.height = h;
+                offscreen.getContext("2d").drawImage(img, 0, 0);
+                activity.storage["SESSIONIMAGE" + p] = offscreen.toDataURL("image/png");
+            } catch (e) {
+                ErrorHandler.recoverable(e, { operation: "saveLocally_thumbnail" });
+            }
+        };
+
+        img.src = "data:image/svg+xml;base64," + window.btoa(base64Encode(svgData));
+    }
+
+    // -----------------------------------------------------------------------
+    // MIDI import
+    // -----------------------------------------------------------------------
+
+    _midiImportBlocks(midi) {
+        if (document.getElementById("import-midi")) return;
+
+        const modal = document.createElement("div");
+        modal.classList.add("modalBox");
+        modal.id = "import-midi";
+        const title = document.createElement("h2");
+        title.textContent = _("Import MIDI");
+        title.classList.add("modal-title");
+        modal.appendChild(title);
+
+        const container = document.createElement("div");
+        container.classList.add("message-container");
+        const message = document.createElement("p");
+        message.textContent = _("Set the max blocks to generate:");
+        message.classList.add("modal-message");
+        container.appendChild(message);
+
+        const select = document.createElement("select");
+        select.classList.add("block-count-dropdown");
+
+        for (let i = 1; i <= 12; i++) {
+            const option = document.createElement("option");
+            option.value = i * 100;
+            option.textContent = i * 100;
+            select.appendChild(option);
+        }
+
+        container.appendChild(select);
+        modal.appendChild(container);
+
+        const importConfirm = document.createElement("button");
+        importConfirm.classList.add("confirm-button");
+        importConfirm.textContent = _("Confirm");
+        importConfirm.style.border = "none";
+        importConfirm.style.borderRadius = "4px";
+        importConfirm.style.padding = "8px 16px";
+        importConfirm.style.fontWeight = "bold";
+        importConfirm.style.cursor = "pointer";
+        importConfirm.style.marginRight = "16px";
+        importConfirm.addEventListener("click", () => {
+            const maxNoteBlocks = select.value;
+            require(["activity/midi"], function () {
+                transcribeMidi(midi, maxNoteBlocks);
+            });
+            document.body.removeChild(modal);
+        });
+        modal.appendChild(importConfirm);
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.classList.add("cancel-button");
+        cancelBtn.textContent = _("Cancel");
+        cancelBtn.addEventListener("click", () => {
+            document.body.removeChild(modal);
+        });
+        modal.appendChild(cancelBtn);
+
+        document.body.appendChild(modal);
+    }
+
+    // -----------------------------------------------------------------------
+    // Run
+    // -----------------------------------------------------------------------
+
+    runProject(env) {
+        pubsub.off("finishedLoading", this.runProject);
+
+        const that = this.activity;
+        setTimeout(() => {
+            that._changeBlockVisibility();
+            that._doFastButton(env);
+        }, 5000);
+    }
+
+    // -----------------------------------------------------------------------
+    // Note value helper
+    // -----------------------------------------------------------------------
+
+    getClosestStandardNoteValue(duration) {
+        let closest = _STANDARD_DURATIONS[0];
+        let minDiff = Math.abs(duration - closest.duration);
+
+        for (let i = 1; i < _STANDARD_DURATIONS.length; i++) {
+            let diff = Math.abs(duration - _STANDARD_DURATIONS[i].duration);
+            if (diff < minDiff) {
+                closest = _STANDARD_DURATIONS[i];
+                minDiff = diff;
+            }
+        }
+
+        return closest.value.split("/").map(Number);
+    }
+
+    // -----------------------------------------------------------------------
+    // File chooser and drag-and-drop handlers
+    // -----------------------------------------------------------------------
+
+    _setupFileHandlers() {
+        const that = this.activity;
+        const pm = this;
+
+        const finishLoading = () => {
+            that.loading = false;
+            document.body.style.cursor = "default";
+            that.stopLoadAnimation();
+        };
+
+        const getProjectName = file => {
+            const extensionIndex = file.name.lastIndexOf(".");
+            return extensionIndex === -1 ? file.name : file.name.slice(0, extensionIndex);
+        };
+
+        const readMXMLFile = (file, reader) => {
+            if (file.name.split(".").pop().toLowerCase() !== "mxl") {
+                reader.readAsText(file);
+                return;
+            }
+            if (file.size > MAX_MXL_ARCHIVE_SIZE) {
+                const error = new Error("Compressed MusicXML file exceeds the 20 MiB limit.");
+                ErrorHandler.capture(error, { operation: "mxmlImport" });
+                that.errorMsg(_("Cannot load project from the file. Please check the file type."));
+                return;
+            }
+            reader.readAsArrayBuffer(file);
+        };
+
+        const initialiseLocalImportedProject = async file => {
+            const baseName = getProjectName(file) || _("My Project");
+            let projectName = baseName;
+            let suffix = 2;
+            const projectExists = async name => {
+                if (
+                    name === that.storage.currentProject ||
+                    that.storage["SESSION" + name] !== undefined
+                ) {
+                    return true;
+                }
+                return Boolean(
+                    that.sessionStorageManager &&
+                    typeof that.sessionStorageManager.loadSession === "function" &&
+                    (await that.sessionStorageManager.loadSession("SESSION" + name))
+                );
+            };
+            while (await projectExists(projectName)) {
+                projectName = `${baseName} ${suffix}`;
+                suffix += 1;
+            }
+            that.storage.currentProject = projectName;
+        };
+
+        const saveLocalSession = async () => {
+            if (that.sessionStorageManager && typeof that.saveSessionAsync === "function") {
+                await that.saveSessionAsync();
+            } else if (typeof that.saveLocally === "function") {
+                await that.saveLocally({ rejectOnProjectSaveError: true });
+            }
+        };
+
+        const saveImportedProject = async () => {
+            try {
+                if (!that.planet) {
+                    await saveLocalSession();
+                    return;
+                }
+                await (typeof that.saveLocally === "function"
+                    ? that.saveLocally({ rejectOnProjectSaveError: true })
+                    : that.planet && typeof that.planet.saveLocally === "function"
+                      ? that.planet.saveLocally({ rejectOnProjectSaveError: true })
+                      : null);
+            } catch (error) {
+                ErrorHandler.recoverable(error, { operation: "saveImportedProject" });
+            }
+        };
+
+        const loadImportedBlocks = (obj, errorOperation) => {
+            let loadToken = null;
+            const belongsToThisLoad = payload =>
+                loadToken === null || !payload || payload.token === loadToken;
+            const stopWatching = () => {
+                pubsub.off("finishedLoading", onFinished);
+                pubsub.off("loadFailed", onFailed);
+            };
+            const onFinished = async payload => {
+                if (!belongsToThisLoad(payload)) return;
+                stopWatching();
+                await saveImportedProject();
+                finishLoading();
+            };
+            const onFailed = payload => {
+                if (!belongsToThisLoad(payload)) return;
+                stopWatching();
+                const error = (payload && payload.error) || new Error("loadNewBlocks failed");
+                ErrorHandler.capture(error, { operation: errorOperation });
+                that.errorMsg(_("Cannot load project from the file. Please check the file type."));
+                finishLoading();
+            };
+
+            pubsub.on("finishedLoading", onFinished);
+            pubsub.on("loadFailed", onFailed);
+            try {
+                loadToken = that.blocks.loadNewBlocks(obj);
+            } catch (error) {
+                stopWatching();
+                throw error;
+            }
+        };
+
+        const replaceProjectFromFile = async (obj, file, errorOperation, clearCanvas) => {
+            // Checked first: the steps below replace the project that is open.
+            if (!_isProjectData(obj)) {
+                throw new Error("The file does not contain a Music Blocks project.");
+            }
+
+            if (that.planet) {
+                try {
+                    await that.planet.saveLocally({ rejectOnProjectSaveError: true });
+                } catch (error) {
+                    ErrorHandler.capture(error, { operation: "saveProjectBeforeImport" });
+                    finishLoading();
+                    return;
+                }
+                that.planet.closePlanet();
+            } else {
+                try {
+                    await saveLocalSession();
+                    await initialiseLocalImportedProject(file);
+                } catch (error) {
+                    ErrorHandler.capture(error, { operation: "saveProjectBeforeImport" });
+                    finishLoading();
+                    return;
+                }
+            }
+
+            const trashComplete = new Promise(resolve => {
+                const onTrash = () => {
+                    that.stage.removeAllEventListeners("trashsignal");
+                    resolve();
+                };
+                that.stage.removeAllEventListeners("trashsignal");
+                that.stage.addEventListener("trashsignal", onTrash, false);
+            });
+            that.sendAllToTrash(false, true);
+            if (clearCanvas) {
+                that._allClear(false, true);
+            }
+            if (that.gitDropdownUI && typeof that.gitDropdownUI.clearForNewProject === "function") {
+                that.gitDropdownUI.clearForNewProject();
+            }
+
+            try {
+                const initialization = that.planet
+                    ? that.planet.initialiseNewProject(getProjectName(file), false)
+                    : null;
+                await Promise.all([trashComplete, initialization]);
+                loadImportedBlocks(obj, errorOperation);
+            } catch (error) {
+                that.stage.removeAllEventListeners("trashsignal");
+                ErrorHandler.capture(error, { operation: errorOperation });
+                that.errorMsg(_("Cannot load project from the file. Please check the file type."));
+                finishLoading();
+            }
+        };
+
+        that.fileChooser.addEventListener("click", event => {
+            event.currentTarget.value = "";
+        });
+
+        that.fileChooser.addEventListener(
+            "change",
+            () => {
+                const reader = new FileReader();
+                const midiReader = new FileReader();
+                const abcReader = new FileReader();
+                const mxmlReader = new FileReader();
+
+                reader.onload = () => {
+                    that.loading = true;
+                    document.body.style.cursor = "wait";
+                    that.doLoadAnimation();
+
+                    setTimeout(async () => {
+                        const rawData = reader.result;
+                        if (rawData === null || rawData === "") {
+                            that.errorMsg(
+                                _("Cannot load project from the file. Please check the file type.")
+                            );
+                            finishLoading();
+                        } else {
+                            /* istanbul ignore next -- file-chooser change handler is browser-only; inaccessible from Jest */
+                            const cleanData = rawData.replace(/\n/g, " ");
+                            let obj;
+                            try {
+                                if (cleanData.includes("html")) {
+                                    let extracted;
+                                    extracted = extractProjectDataFromHTML(cleanData);
+                                    if (!extracted) {
+                                        that.errorMsg(
+                                            _("Cannot find project data in this HTML file.")
+                                        );
+                                        finishLoading();
+                                        return;
+                                    }
+                                    obj = JSON.parse(unescapeHTML(extracted));
+                                } else {
+                                    obj = JSON.parse(cleanData);
+                                }
+                                for (const name in that.palettes.dict) {
+                                    that.palettes.dict[name].hideMenu(true);
+                                }
+
+                                that.stage.removeAllEventListeners("trashsignal");
+
+                                if (!that.merging) {
+                                    await replaceProjectFromFile(
+                                        obj,
+                                        that.fileChooser.files[0],
+                                        "loadProjectFromFile",
+                                        false
+                                    );
+                                } else {
+                                    that.merging = false;
+                                    that.blocks.loadNewBlocks(obj);
+                                    that.loading = false;
+                                    that.refreshCanvas();
+                                }
+                            } catch (e) {
+                                that.errorMsg(
+                                    _(
+                                        "Cannot load project from the file. Please check the file type."
+                                    )
+                                );
+
+                                ErrorHandler.capture(e, { operation: "loadProjectFromFile" });
+                                finishLoading();
+                            }
+                        }
+                    }, 200);
+                };
+
+                midiReader.onload = e => {
+                    try {
+                        const midi = new Midi(e.target.result);
+                        console.debug(midi);
+                        pm._midiImportBlocks(midi);
+                    } catch (err) {
+                        ErrorHandler.capture(err, { operation: "midiImport" });
+                        if (that && typeof that.errorMsg === "function") {
+                            that.errorMsg(
+                                _("Cannot load project from the file. Please check the file type.")
+                            );
+                        }
+                    }
+                };
+
+                abcReader.onload = async event => {
+                    that.loading = true;
+                    document.body.style.cursor = "wait";
+                    that.doLoadAnimation();
+                    try {
+                        const abcData =
+                            (event && event.target && event.target.result) || abcReader.result;
+
+                        await ensureABCJS();
+                        const tunebook = new ABCJS.parseOnly(abcData);
+
+                        debugLog(tunebook);
+                        await Promise.all(tunebook.map(tune => that.parseABC(tune)));
+                        finishLoading();
+                    } catch (e) {
+                        ErrorHandler.capture(e, { operation: "abcImport" });
+                        that.errorMsg(
+                            _("Cannot load project from the file. Please check the file type.")
+                        );
+                        finishLoading();
+                    }
+                };
+
+                mxmlReader.onload = async event => {
+                    that.loading = true;
+                    document.body.style.cursor = "wait";
+                    that.doLoadAnimation();
+
+                    // loadNewBlocks() (js/blocks.js) processes blocks in
+                    // chunks across setTimeout(0) boundaries and reports
+                    // completion asynchronously via the "finishedLoading"/
+                    // "loadFailed" pubsub events (tagged with the token it
+                    // returns), rather than returning only once every block
+                    // is in place. parseMXML's own promise resolving is not
+                    // enough to know the import is actually finished.
+                    // Listeners are registered before parseMXML runs so a
+                    // load that happens to finish synchronously (small
+                    // scores) is still observed.
+                    let loadToken = null;
+                    let settled = false;
+                    const belongsToThisLoad = payload =>
+                        loadToken === null || !payload || payload.token === loadToken;
+                    const stopWatching = () => {
+                        pubsub.off("finishedLoading", onFinished);
+                        pubsub.off("loadFailed", onFailed);
+                    };
+                    const onFinished = payload => {
+                        if (settled || !belongsToThisLoad(payload)) return;
+                        settled = true;
+                        stopWatching();
+                        finishLoading();
+                    };
+                    const onFailed = payload => {
+                        if (settled || !belongsToThisLoad(payload)) return;
+                        settled = true;
+                        stopWatching();
+                        const error =
+                            (payload && payload.error) || new Error("loadNewBlocks failed");
+                        ErrorHandler.capture(error, { operation: "mxmlImport" });
+                        that.errorMsg(
+                            _("Cannot load project from the file. Please check the file type.")
+                        );
+                        finishLoading();
+                    };
+
+                    pubsub.on("finishedLoading", onFinished);
+                    pubsub.on("loadFailed", onFailed);
+
+                    try {
+                        const result =
+                            (event && event.target && event.target.result) || mxmlReader.result;
+                        const mxmlData = _isArrayBuffer(result)
+                            ? await extractMXMLFromMXL(result)
+                            : result;
+
+                        loadToken = await that.parseMXML(mxmlData);
+
+                        // A null token means parseMXML never reached
+                        // loadNewBlocks() (malformed XML, no part found) --
+                        // it already reported that via its own errorMsg
+                        // call, so no pubsub event is coming for it.
+                        if (loadToken === null && !settled) {
+                            settled = true;
+                            stopWatching();
+                            finishLoading();
+                        }
+                    } catch (e) {
+                        if (!settled) {
+                            settled = true;
+                            stopWatching();
+                            ErrorHandler.capture(e, { operation: "mxmlImport" });
+                            that.errorMsg(
+                                _("Cannot load project from the file. Please check the file type.")
+                            );
+                            finishLoading();
+                        }
+                    }
+                };
+
+                const file = that.fileChooser.files[0];
+                if (file) {
+                    const extension = file.name.split(".").pop().toLowerCase();
+                    const isMidi = extension === "mid" || extension === "midi";
+                    const isABC = extension === "abc";
+                    const isMXML =
+                        extension === "xml" || extension === "musicxml" || extension === "mxl";
+                    if (isMidi) {
+                        midiReader.readAsArrayBuffer(file);
+                    } else if (isABC) {
+                        abcReader.readAsText(file);
+                    } else if (isMXML) {
+                        readMXMLFile(file, mxmlReader);
+                    } else {
+                        reader.readAsText(file);
+                    }
+                }
+            },
+            false
+        );
+
+        const __handleFileSelect = event => {
+            event.stopPropagation();
+            event.preventDefault();
+
+            const files = event.dataTransfer.files;
+            const reader = new FileReader();
+            const midiReader = new FileReader();
+
+            const abcReader = new FileReader();
+            const mxmlReader = new FileReader();
+            reader.onload = () => {
+                that.loading = true;
+                document.body.style.cursor = "wait";
+
+                setTimeout(async () => {
+                    const rawData = reader.result;
+                    if (rawData === null || rawData === "") {
+                        that.errorMsg(
+                            _("Cannot load project from the file. Please check the file type.")
+                        );
+                        finishLoading();
+                    } else {
+                        /* istanbul ignore next -- drag-and-drop file handler is browser-only; inaccessible from Jest */
+                        const cleanData = rawData.replace(/\n/g, " ");
+                        let obj;
+                        try {
+                            if (cleanData.includes("html")) {
+                                let extracted;
+                                extracted = extractProjectDataFromHTML(cleanData);
+                                if (!extracted) {
+                                    that.errorMsg(_("Cannot find project data in this HTML file."));
+                                    finishLoading();
+                                    return;
+                                }
+                                obj = JSON.parse(unescapeHTML(extracted));
+                            } else {
+                                obj = JSON.parse(cleanData);
+                            }
+                            for (const name in that.blocks.palettes.dict) {
+                                that.palettes.dict[name].hideMenu(true);
+                            }
+
+                            await replaceProjectFromFile(obj, files[0], "loadFromFile", false);
+                        } catch (e) {
+                            ErrorHandler.capture(e, { operation: "loadFromFile" });
+                            that.errorMsg(
+                                _("Cannot load project from the file. Please check the file type.")
+                            );
+                            finishLoading();
+                        }
+                    }
+                }, 200);
+            };
+            midiReader.onload = e => {
+                try {
+                    const midi = new Midi(e.target.result);
+                    console.debug(midi);
+                    pm._midiImportBlocks(midi);
+                } catch (err) {
+                    ErrorHandler.capture(err, { operation: "midiImportBlocks" });
+                    if (that && typeof that.errorMsg === "function") {
+                        that.errorMsg(
+                            _("Cannot load project from the file. Please check the file type.")
+                        );
+                    }
+                }
+            };
+
+            abcReader.onload = async event => {
+                that.loading = true;
+                document.body.style.cursor = "wait";
+                try {
+                    let abcData = event.target.result;
+                    abcData = abcData.replace(/\\/g, "");
+
+                    await ensureABCJS();
+                    const tunebook = new ABCJS.parseOnly(abcData);
+
+                    debugLog(tunebook);
+                    await Promise.all(tunebook.map(tune => that.parseABC(tune)));
+                    finishLoading();
+                } catch (e) {
+                    ErrorHandler.capture(e, { operation: "abcImport" });
+                    that.errorMsg(
+                        _("Cannot load project from the file. Please check the file type.")
+                    );
+                    finishLoading();
+                }
+            };
+
+            mxmlReader.onload = async event => {
+                that.loading = true;
+                document.body.style.cursor = "wait";
+
+                // See the matching comment on the file-chooser's mxmlReader
+                // handler above: loadNewBlocks() finishes asynchronously, so
+                // completion is tracked via the "finishedLoading"/
+                // "loadFailed" pubsub events rather than parseMXML's own
+                // promise resolving.
+                let loadToken = null;
+                let settled = false;
+                const belongsToThisLoad = payload =>
+                    loadToken === null || !payload || payload.token === loadToken;
+                const stopWatching = () => {
+                    pubsub.off("finishedLoading", onFinished);
+                    pubsub.off("loadFailed", onFailed);
+                };
+                const onFinished = payload => {
+                    if (settled || !belongsToThisLoad(payload)) return;
+                    settled = true;
+                    stopWatching();
+                    finishLoading();
+                };
+                const onFailed = payload => {
+                    if (settled || !belongsToThisLoad(payload)) return;
+                    settled = true;
+                    stopWatching();
+                    const error = (payload && payload.error) || new Error("loadNewBlocks failed");
+                    ErrorHandler.capture(error, { operation: "mxmlImport" });
+                    that.errorMsg(
+                        _("Cannot load project from the file. Please check the file type.")
+                    );
+                    finishLoading();
+                };
+
+                pubsub.on("finishedLoading", onFinished);
+                pubsub.on("loadFailed", onFailed);
+
+                try {
+                    const mxmlData = _isArrayBuffer(event.target.result)
+                        ? await extractMXMLFromMXL(event.target.result)
+                        : event.target.result;
+
+                    loadToken = await that.parseMXML(mxmlData);
+
+                    if (loadToken === null && !settled) {
+                        settled = true;
+                        stopWatching();
+                        finishLoading();
+                    }
+                } catch (e) {
+                    if (!settled) {
+                        settled = true;
+                        stopWatching();
+                        ErrorHandler.capture(e, { operation: "mxmlImport" });
+                        that.errorMsg(
+                            _("Cannot load project from the file. Please check the file type.")
+                        );
+                        finishLoading();
+                    }
+                }
+            };
+
+            if (files[0] !== undefined) {
+                const extension = files[0].name.split(".").pop().toLowerCase();
+
+                const isMidi = extension === "mid" || extension === "midi";
+                if (isMidi) {
+                    midiReader.readAsArrayBuffer(files[0]);
+                    return;
+                }
+
+                const isABC = extension === "abc";
+                if (isABC) {
+                    abcReader.readAsText(files[0]);
+                    return;
+                }
+
+                const isMXML =
+                    extension === "xml" || extension === "musicxml" || extension === "mxl";
+                if (isMXML) {
+                    readMXMLFile(files[0], mxmlReader);
+                    return;
+                }
+                reader.readAsText(files[0]);
+                window.scroll(0, 0);
+            }
+        };
+
+        const __handleDragOver = event => {
+            event.stopPropagation();
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+        };
+
+        const dropZone = document.getElementById("canvasHolder");
+        dropZone.addEventListener("dragover", __handleDragOver, false);
+        dropZone.addEventListener("drop", __handleFileSelect, false);
+    }
+
+    // -----------------------------------------------------------------------
+    // Startup: URL params + initial load
+    // -----------------------------------------------------------------------
+
+    /**
+     * Reads the initial block argument named by the "inurl" query parameter.
+     *
+     * @private
+     * @param {string} url - URL of a JSON document carrying an "arg" property.
+     * @returns {Promise<number|null>} The argument, or null if it could not be read.
+     */
+    async _readEnvArg(url) {
+        if (!isSafeUrl(url)) {
+            this.activity.errorMsg(_("Invalid parameters"));
+            return null;
+        }
+
+        const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+        let timeoutId = null;
+
+        try {
+            const request = {};
+            if (controller) {
+                request.signal = controller.signal;
+                // Aborting tears the body stream down too, so a server that
+                // stalls part way through the JSON cannot hold up the load
+                // any more than one that never answers at all.
+                timeoutId = setTimeout(() => controller.abort(), _ENV_ARG_TIMEOUT);
+            }
+
+            const response = await fetch(url, request);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const arg = parseInt((await response.json()).arg, 10);
+            return isNaN(arg) ? null : arg;
+        } catch (e) {
+            ErrorHandler.recoverable(e, { operation: "readEnvArg" });
+            this.activity.errorMsg(_("Something went wrong reading JSON-encoded project data."));
+            return null;
+        } finally {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+            }
+        }
+    }
+
+    start() {
+        const that = this.activity;
+        const pm = this;
+
+        this._setupFileHandlers();
+
+        // Fold the query string into a lowercase-keyed map in one pass. First
+        // value wins for a repeated key, and anything the app does not answer
+        // to is reported once rather than per parameter.
+        const params = new Map();
+        let unknownParam = false;
+
+        for (const [name, value] of new URLSearchParams(window.location.search)) {
+            const key = name.toLowerCase();
+            if (!_KNOWN_URL_PARAMS.has(key)) {
+                unknownParam = true;
+            } else if (!params.has(key)) {
+                params.set(key, value);
+            }
+        }
+
+        if (unknownParam) {
+            that.errorMsg(_("Invalid parameters"));
+        }
+
+        if (params.has("id")) {
+            that.projectID = params.get("id");
+        } else if (params.has("repo")) {
+            that.projectID = params.get("repo");
+        }
+
+        const isTrue = name => (params.get(name) || "").toLowerCase() === "true";
+        const flags = {
+            run: isTrue("run"),
+            show: isTrue("show"),
+            collapse: isTrue("collapse")
+        };
+        const env = [];
+
+        const __scheduleLoad = () => {
+            if (that.projectID !== null) {
+                setTimeout(() => {
+                    that.loadStartWrapper(
+                        (act, pID, f, e) => pm._loadProject(pID, f, e),
+                        that.projectID,
+                        flags,
+                        env
+                    );
+                }, 200);
+            } else {
+                setTimeout(() => {
+                    that.loadStartWrapper((act, ...args) => pm._loadStart(act, ...args));
+                }, 200);
+            }
+        };
+
+        // "inurl" names the document holding the argument handed to the first
+        // block, so the load waits on it. Requesting it and scheduling the
+        // load side by side left env empty every time.
+        if (!params.has("inurl")) {
+            __scheduleLoad();
+            return;
+        }
+
+        this._readEnvArg(params.get("inurl"))
+            .then(arg => {
+                if (arg !== null) {
+                    env.push(arg);
+                }
+            })
+            .finally(__scheduleLoad);
+    }
+}
+
+const setupProjectManager = activity => {
+    const manager = new ProjectManager(activity);
+    activity.projectManager = manager;
+    return manager;
+};
+
+if (typeof define === "function" && define.amd) {
+    define(function () {
+        window.setupProjectManager = setupProjectManager;
+        return { setupProjectManager, ProjectManager, extractMXMLFromMXL };
+    });
+} else if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+        setupProjectManager,
+        ProjectManager,
+        extractMXMLFromMXL,
+        MAX_MXL_ARCHIVE_SIZE
+    };
+}

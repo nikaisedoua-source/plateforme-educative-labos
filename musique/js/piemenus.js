@@ -1,0 +1,4649 @@
+// Copyright (c) 2014-23 Walter Bender
+//
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the The GNU Affero General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// You should have received a copy of the GNU Affero General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, 51 Franklin Street, Suite 500 Boston, MA 02110-1335 USA
+//
+
+/*
+   global
+
+    platformColor, docById, Singer, slicePath, wheelnav, wheelnavItem,
+    DEFAULTVOICE, getDrumName, getNote, MUSICALMODES last, SHARP, FLAT,
+    PREVIEWVOLUME, DEFAULTVOLUME, MODE_PIE_MENUS,
+    getSavedCustomModes, getModeNamesForGroup, getModeLabel,
+    getModeNameFromLabel, getModeSliceColors, updateWheelItems,
+    getModeGroupTitleFont, getModeSliceFont, configureWheel,
+    INTERVALVALUES, INTERVALS, getDrumSynthName, getVoiceSynthName,
+    getMunsellColor, COLORS40, frequencyToPitch, pitchToFrequency,
+    TEMPERAMENT, isNonEDO, getNonEDOModeSteps, getNonEDOFrequency, instruments,
+    DOUBLESHARP, NATURAL, DOUBLEFLAT, EQUIVALENTACCIDENTALS,
+    FIXEDSOLFEGE, NOTENAMES, numberToPitch,
+    nthDegreeToPitch, SOLFEGENAMES, buildScale, getCurrentEDO, generateNoteNames,
+    _THIS_IS_TURTLE_BLOCKS_,
+    CHORDNAMES, Synth, Tone, activity, announceToScreenReader
+*/
+
+/*
+     Globals location
+     - lib/wheelnav
+        slicePath, wheelnav, wheelnavItem
+     - js/utils/musicutils.js
+        FLAT, SHARP, DEFAULTVOICE, getDrumName, getNote, MODE_PIE_MENUS, MUSICALMODES, INTERVALVALUES,
+        INTERVALS, getDrumSynthName, getVoiceSynthName, frequencyToPitch, DOUBLESHARP, NATURAL,
+        DOUBLEFLAT, EQUIVALENTACCIDENTALS, FIXEDSOLFEGE, NOTENAMES, FIXEDSOLFEGE, NOTENAMES, numberToPitch,
+        nthDegreeToPitch, SOLFEGENAMES, buildScale
+
+     - js/utils/utils.js
+        _, last, docById, announceToScreenReader
+     - js/turtle-singer.js
+        Singer
+     - js/utils/munsell.js
+        getMunsellColor, COLORS40
+     - js/utils/platformstyle.js
+        platformColorcl
+     - js/utils/synthutils.js
+        instruments
+     - js/logo.js
+        PREVIEWVOLUME, DEFAULTVOLUME
+ */
+
+/*
+   exported
+
+   piemenuModes, piemenuPitches, piemenuCustomNotes, piemenuGrid,
+   piemenuIntervals, piemenuVoices, piemenuBoolean,
+   piemenuBasic, piemenuColor, piemenuNumber,
+   piemenuNoteValue, piemenuAccidentals, piemenuKey, piemenuChords,
+   piemenuDissectNumber, getTemperamentSliceFont,
+   getWheelSafeBounds, positionWheelDiv
+*/
+
+/**
+ * Sets the pie menu container size based on the viewport width.
+ * Uses the base diameter and scales down for smaller screens.
+ * @param diameter Base diameter of the wheel in pixels
+ * @returns void
+ */
+let lastWheelSize = 400;
+
+/**
+ * Sets the dimensions of the pie menu container (`#wheelDiv`)
+ * based on the provided diameter and current screen breakpoint.
+ *
+ * @param {number} [i=400] Base diameter in pixels
+ * @returns void
+ */
+const setWheelSize = (i = 400) => {
+    lastWheelSize = i;
+    const wheelDiv = document.getElementById("wheelDiv");
+    const screenWidth = typeof window !== "undefined" ? window.innerWidth : 1200;
+
+    if (!wheelDiv) return;
+
+    wheelDiv.style.position = "absolute";
+    wheelDiv.style.zIndex = "20000"; // Set z-index higher than floating windows (10000)
+
+    if (screenWidth >= 1200) {
+        wheelDiv.style.width = i + "px";
+        wheelDiv.style.height = i + "px";
+    } else if (screenWidth >= 768) {
+        wheelDiv.style.width = i - 50 + "px";
+        wheelDiv.style.height = i - 50 + "px";
+    } else {
+        wheelDiv.style.width = i - 100 + "px";
+        wheelDiv.style.height = i - 100 + "px";
+    }
+
+    wheelDiv.style.height = wheelDiv.style.width;
+};
+
+/**
+ * Computes an appropriate pie menu size based on the turtle canvas bounds.
+ *
+ * @param block Block instance owning the pie menu
+ * @returns Minimum of the canvas width and height
+ */
+const getPieMenuSize = block => {
+    const canvas = block.blocks.turtles._canvas;
+    return Math.min(canvas.width, canvas.height);
+};
+
+// Debounce resize handler for performance
+let wheelResizeTimeout;
+let wheelResizeListenerAttached = false;
+let activeExitWheel = null;
+let activeWheelPositioning = null;
+
+const handleWheelResize = () => {
+    if (
+        activeWheelPositioning &&
+        docById("wheelDiv") &&
+        docById("wheelDiv").style.display !== "none"
+    ) {
+        positionWheelDiv(
+            activeWheelPositioning.block,
+            activeWheelPositioning.displaySize,
+            activeWheelPositioning.desiredLeft,
+            activeWheelPositioning.desiredTop
+        );
+    } else {
+        setWheelSize(lastWheelSize);
+    }
+};
+
+const debouncedSetWheelSize = () => {
+    clearTimeout(wheelResizeTimeout);
+    wheelResizeTimeout = setTimeout(handleWheelResize, 150);
+};
+
+const enableWheelResizeHandling = () => {
+    if (wheelResizeListenerAttached) return;
+    wheelResizeListenerAttached = true;
+    window.addEventListener("resize", debouncedSetWheelSize);
+    setWheelSize(lastWheelSize);
+};
+
+const disableWheelResizeHandling = () => {
+    if (!wheelResizeListenerAttached) return;
+    wheelResizeListenerAttached = false;
+    window.removeEventListener("resize", debouncedSetWheelSize);
+    clearTimeout(wheelResizeTimeout);
+};
+
+/**
+ * Workspace rectangle a #wheelDiv pie menu may occupy.
+ * Stays clear of the top toolbar and the left palette, and does not extend
+ * past the viewport or the turtle canvas.
+ *
+ * @param {object} block Block that opened the menu
+ * @returns {{safeLeft: number, safeTop: number, rightBound: number, bottomBound: number}}
+ */
+const getWheelSafeBounds = block => {
+    let topBarBottom = 0;
+    if (typeof document !== "undefined") {
+        const toolbars = document.getElementById("toolbars");
+        if (
+            toolbars &&
+            toolbars.style.display !== "none" &&
+            toolbars.style.visibility !== "hidden"
+        ) {
+            const tbRect =
+                typeof toolbars.getBoundingClientRect === "function"
+                    ? toolbars.getBoundingClientRect()
+                    : null;
+            if (tbRect && tbRect.bottom > 0) {
+                topBarBottom = Math.max(topBarBottom, tbRect.bottom);
+            } else if (toolbars.offsetHeight > 0) {
+                topBarBottom = Math.max(
+                    topBarBottom,
+                    (toolbars.offsetTop || 0) + toolbars.offsetHeight
+                );
+            }
+        }
+    }
+    if (block && block.activity) {
+        if (block.activity.toolbarHeight) {
+            topBarBottom = Math.max(topBarBottom, block.activity.toolbarHeight);
+        }
+        if (block.activity.canvas && block.activity.canvas.offsetTop) {
+            topBarBottom = Math.max(topBarBottom, block.activity.canvas.offsetTop);
+        }
+    }
+
+    let leftBarRight = 0;
+    if (typeof document !== "undefined") {
+        const palette = document.getElementById("palette");
+        if (
+            palette &&
+            palette.style.display !== "none" &&
+            palette.style.visibility !== "hidden" &&
+            (!palette.style.transform || !palette.style.transform.includes("-100%"))
+        ) {
+            const pRect =
+                typeof palette.getBoundingClientRect === "function"
+                    ? palette.getBoundingClientRect()
+                    : null;
+            if (pRect && pRect.right > 0) {
+                leftBarRight = Math.max(leftBarRight, pRect.right);
+            } else if (palette.offsetWidth > 0) {
+                leftBarRight = Math.max(
+                    leftBarRight,
+                    (palette.offsetLeft || 0) + palette.offsetWidth
+                );
+            }
+        }
+    }
+    if (block && block.activity) {
+        if (
+            block.activity.palettes &&
+            !block.activity.palettes.collapsed &&
+            block.activity.palettes.paletteWidth
+        ) {
+            leftBarRight = Math.max(leftBarRight, block.activity.palettes.paletteWidth);
+        }
+        if (block.activity.canvas && block.activity.canvas.offsetLeft) {
+            leftBarRight = Math.max(leftBarRight, block.activity.canvas.offsetLeft);
+        }
+    }
+
+    const safeTop = topBarBottom > 0 ? topBarBottom + 8 : 8;
+    const safeLeft = leftBarRight > 0 ? leftBarRight + 8 : 8;
+
+    const turtleCanvas =
+        (block && block.blocks && block.blocks.turtles && block.blocks.turtles._canvas) || null;
+    const canvasWidth =
+        (turtleCanvas && turtleCanvas.width) ||
+        (block && block.activity && block.activity.canvas && block.activity.canvas.width) ||
+        1200;
+    const canvasHeight =
+        (turtleCanvas && turtleCanvas.height) ||
+        (block && block.activity && block.activity.canvas && block.activity.canvas.height) ||
+        900;
+
+    const viewportWidth = (typeof window !== "undefined" && window.innerWidth) || canvasWidth;
+    const viewportHeight = (typeof window !== "undefined" && window.innerHeight) || canvasHeight;
+
+    const canvasLeftEdge =
+        (block && block.activity && block.activity.canvas && block.activity.canvas.offsetLeft) || 0;
+    const canvasTopEdge =
+        (block && block.activity && block.activity.canvas && block.activity.canvas.offsetTop) || 0;
+
+    const rightBound = Math.min(viewportWidth, canvasLeftEdge + canvasWidth);
+    const bottomBound = Math.min(viewportHeight, canvasTopEdge + canvasHeight);
+
+    return { safeLeft, safeTop, rightBound, bottomBound };
+};
+
+/**
+ * Sizes #wheelDiv and clamps the desired position to the safe workspace rectangle.
+ * Preserves the caller's desired anchor coordinates while ensuring the menu
+ * remains within the safe boundary.
+ *
+ * @param {object} block Block that opened the menu
+ * @param {number} displaySize Diameter passed to setWheelSize
+ * @param {number} desiredLeft Preferred left position in pixels
+ * @param {number} desiredTop Preferred top position in pixels
+ * @param {{safeLeft: number, safeTop: number, rightBound: number, bottomBound: number}} [bounds] Precomputed safe bounds
+ * @returns {{size: number, left: number, top: number, desiredLeft: number, desiredTop: number}}
+ */
+const positionWheelDiv = (block, displaySize, desiredLeft, desiredTop, bounds = null) => {
+    activeWheelPositioning = { block, displaySize, desiredLeft, desiredTop };
+    const safe = bounds || getWheelSafeBounds(block);
+    const wheelDiv = docById("wheelDiv");
+    if (wheelDiv) {
+        wheelDiv.style.position = "absolute";
+    }
+    setWheelSize(displaySize);
+
+    const size = (wheelDiv && parseInt(wheelDiv.style.width, 10)) || displaySize;
+    const minLeft = safe.safeLeft;
+    const maxLeft = Math.max(minLeft, safe.rightBound - size - 8);
+    const minTop = safe.safeTop;
+    const maxTop = Math.max(minTop, safe.bottomBound - size - 8);
+
+    const left = Math.min(maxLeft, Math.max(minLeft, desiredLeft));
+    const top = Math.min(maxTop, Math.max(minTop, desiredTop));
+
+    if (wheelDiv) {
+        wheelDiv.style.left = left + "px";
+        wheelDiv.style.top = top + "px";
+    }
+
+    return { size, left, top, desiredLeft, desiredTop };
+};
+
+/**
+ * DOM container IDs that host pie menu / wheelnav instances.
+ */
+const PIE_MENU_CONTAINERS = [
+    "wheelDiv",
+    "wheelDivptm",
+    "chooseKeyDiv",
+    "helpfulWheelDiv",
+    "meterWheelDiv",
+    "wheelDiv2",
+    "wheelDiv3",
+    "wheelDiv4"
+];
+
+const isAnyPieMenuVisible = () => {
+    for (let i = 0; i < PIE_MENU_CONTAINERS.length; i++) {
+        const div = docById(PIE_MENU_CONTAINERS[i]);
+        if (div && div.style && div.style.display !== "none") {
+            return true;
+        }
+    }
+    return false;
+};
+
+const isInteractive = target => {
+    // 1. Check if inside number/text input label container
+    const labelDiv = docById("labelDiv");
+    if (labelDiv && typeof labelDiv.contains === "function" && labelDiv.contains(target)) {
+        return true;
+    }
+
+    // 2. Check if inside movable container (used by piemenuKey)
+    const movable = docById("movable");
+    if (movable && typeof movable.contains === "function" && movable.contains(target)) {
+        return true;
+    }
+
+    // 3. Check if inside any of the pie menu containers and is a slice/title/icon (not the container or SVG root)
+    for (let i = 0; i < PIE_MENU_CONTAINERS.length; i++) {
+        const div = docById(PIE_MENU_CONTAINERS[i]);
+        if (div && typeof div.contains === "function" && div.contains(target)) {
+            if (target !== div && target.tagName && target.tagName.toLowerCase() !== "svg") {
+                return true;
+            }
+        }
+    }
+
+    return false;
+};
+
+const dismissActivePieMenu = () => {
+    if (
+        activeExitWheel &&
+        activeExitWheel.navItems &&
+        activeExitWheel.navItems[0] &&
+        typeof activeExitWheel.navItems[0].navigateFunction === "function"
+    ) {
+        activeExitWheel.navItems[0].navigateFunction();
+    } else {
+        for (let i = 0; i < PIE_MENU_CONTAINERS.length; i++) {
+            const div = docById(PIE_MENU_CONTAINERS[i]);
+            if (div && div.style && div.style.display !== "none") {
+                if (PIE_MENU_CONTAINERS[i] === "wheelDiv") {
+                    hideWheelDiv();
+                } else {
+                    div.style.display = "none";
+                }
+            }
+        }
+        const movable = docById("movable");
+        if (movable) {
+            movable.style.display = "none";
+        }
+    }
+    document.removeEventListener("mousedown", handleOutsideClick);
+    document.removeEventListener("keydown", handleEscapeKey, true);
+    activeExitWheel = null;
+    activeWheelPositioning = null;
+};
+
+const handleOutsideClick = event => {
+    if (!isAnyPieMenuVisible()) {
+        return;
+    }
+
+    if (!isInteractive(event.target)) {
+        dismissActivePieMenu();
+    }
+};
+
+// Capture-phase Escape handler: keyboard-controller disables all of its own
+// shortcuts while a pie menu is open, so without this a keyboard user has no
+// way to close the menu at all.
+const handleEscapeKey = event => {
+    if (event.key !== "Escape" || !isAnyPieMenuVisible()) {
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    dismissActivePieMenu();
+};
+
+const showWheelDiv = () => {
+    const wheelDiv = docById("wheelDiv");
+    if (!wheelDiv) return null;
+    wheelDiv.style.display = "";
+    enableWheelResizeHandling();
+
+    setTimeout(() => {
+        if (isAnyPieMenuVisible()) {
+            document.addEventListener("mousedown", handleOutsideClick);
+            document.addEventListener("keydown", handleEscapeKey, true);
+        }
+    }, 50);
+
+    return wheelDiv;
+};
+
+const hideWheelDiv = () => {
+    const wheelDiv = docById("wheelDiv");
+    if (!wheelDiv) return null;
+    wheelDiv.style.display = "none";
+    disableWheelResizeHandling();
+
+    // enableWheelScroll() hangs this listener on the persistent wheelDiv, so it
+    // outlives the wheel and block it closes over unless we take it off here.
+    if (wheelDiv._scrollHandler) {
+        wheelDiv.removeEventListener("wheel", wheelDiv._scrollHandler);
+        wheelDiv._scrollHandler = null;
+    }
+
+    if (!isAnyPieMenuVisible()) {
+        document.removeEventListener("mousedown", handleOutsideClick);
+        document.removeEventListener("keydown", handleEscapeKey, true);
+        activeExitWheel = null;
+    }
+    activeWheelPositioning = null;
+
+    return wheelDiv;
+};
+
+/**
+ * Enables mouse-wheel scrolling to rotate a wheelnav instance
+ * without triggering sound previews.
+ *
+ * @param wheel Wheelnav instance to rotate
+ * @param itemCount Total number of selectable items in the wheel
+ * @returns void
+ */
+const enableWheelScroll = (wheel, itemCount) => {
+    const wheelDiv = document.getElementById("wheelDiv");
+    if (!wheelDiv || !wheel) return;
+
+    // Remove existing scroll handler if any
+    if (wheelDiv._scrollHandler) {
+        wheelDiv.removeEventListener("wheel", wheelDiv._scrollHandler);
+    }
+
+    let isScrolling = false;
+    let scrollTimeout = null;
+
+    const scrollHandler = event => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        // Throttle the scroll events (only process every 150ms)
+        if (isScrolling) return;
+        isScrolling = true;
+
+        // Calculate the direction and amount to rotate
+        const delta = event.deltaY > 0 ? 1 : -1;
+
+        // Get current selected index
+        const currentIndex = wheel.selectedNavItemIndex;
+
+        // Calculate next index (with wrapping)
+        let nextIndex = currentIndex + delta;
+        if (nextIndex < 0) {
+            nextIndex = itemCount - 1;
+        } else if (nextIndex >= itemCount) {
+            nextIndex = 0;
+        }
+
+        // Temporarily disable all navigate functions to prevent sound previews
+        const originalFunctions = [];
+        for (let i = 0; i < wheel.navItems.length; i++) {
+            originalFunctions[i] = wheel.navItems[i].navigateFunction;
+            wheel.navItems[i].navigateFunction = null;
+        }
+
+        // Rotate to the new index
+        wheel.navigateWheel(nextIndex);
+
+        // Restore navigate functions after a short delay
+        setTimeout(() => {
+            for (let i = 0; i < wheel.navItems.length; i++) {
+                wheel.navItems[i].navigateFunction = originalFunctions[i];
+            }
+        }, 50);
+
+        // Reset throttle after 150ms
+        setTimeout(() => {
+            isScrolling = false;
+        }, 150);
+    };
+
+    // Store the handler so we can remove it later
+    wheelDiv._scrollHandler = scrollHandler;
+    wheelDiv.addEventListener("wheel", scrollHandler, { passive: false });
+};
+
+/**
+ * Raphael papers of the menus that close on an outside click. configureExitWheel
+ * adds the paper its exit wheel draws on, which is the one every wheel of that
+ * menu shares.
+ */
+const outsideClickPapers = new WeakSet();
+
+/**
+ * wheelnav redraws a wheel's selected item on every mouseover, moving the item's
+ * nodes to the front. The move fires another mouseover on the same item, so while
+ * the pointer rests on the selected item its nodes keep being re-inserted, and a
+ * press on it is reported on the bare <svg>. handleOutsideClick then closes the
+ * menu as an outside click and the item is never chosen (for example Add Row >
+ * pitch in the Phrase Maker). Redrawing a selected item only re-applies its
+ * selected look, so skip it, but only for wheels drawn on one of those papers.
+ * Every other wheel gets wheelnav's own hoverEffect, unchanged. The vendored
+ * lib/wheelnav.js file is left as it is.
+ */
+const guardSelectedItemHover = () => {
+    if (typeof wheelnavItem === "undefined" || !wheelnavItem.prototype) {
+        return;
+    }
+    const hoverEffect = wheelnavItem.prototype.hoverEffect;
+    if (typeof hoverEffect !== "function" || hoverEffect.skipsSelectedItem) {
+        return;
+    }
+    const guardedHoverEffect = function (hovered, isEnter) {
+        if (this.selected && this.wheelnav && outsideClickPapers.has(this.wheelnav.raphael)) {
+            return;
+        }
+        return hoverEffect.call(this, hovered, isEnter);
+    };
+    guardedHoverEffect.skipsSelectedItem = true;
+    wheelnavItem.prototype.hoverEffect = guardedHoverEffect;
+};
+
+// Ensure exit wheels behave like stateless buttons (no sticky selection)
+const configureExitWheel = exitWheel => {
+    if (!exitWheel || !exitWheel.navItems) {
+        return;
+    }
+
+    // Every menu that closes on an outside click comes through here. Its wheels
+    // share the exit wheel's paper, so a moving selected item can't turn a click
+    // on any of them into a close, whichever order they were built in.
+    guardSelectedItemHover();
+    if (exitWheel.raphael) {
+        outsideClickPapers.add(exitWheel.raphael);
+    }
+    activeExitWheel = exitWheel;
+
+    // Register dismissal listeners after 50ms if any pie menu is visible
+    setTimeout(() => {
+        if (isAnyPieMenuVisible()) {
+            document.addEventListener("mousedown", handleOutsideClick);
+            document.addEventListener("keydown", handleEscapeKey, true);
+        }
+    }, 50);
+
+    const clearSelection = () => {
+        exitWheel.selectedNavItemIndex = null;
+        for (let i = 0; i < exitWheel.navItems.length; i++) {
+            exitWheel.navItems[i].selected = false;
+            exitWheel.navItems[i].hovered = false;
+        }
+        if (exitWheel.raphael && exitWheel.raphael.canvas) {
+            exitWheel.refreshWheel(true);
+        }
+    };
+
+    clearSelection();
+
+    exitWheel.navigateWheel = clicked => {
+        const item = exitWheel.navItems[clicked];
+        if (!item || item.enabled === false) {
+            return;
+        }
+        clearSelection();
+        if (typeof item.navigateFunction === "function") {
+            item.navigateFunction();
+        }
+        document.removeEventListener("mousedown", handleOutsideClick);
+        document.removeEventListener("keydown", handleEscapeKey, true);
+        if (activeExitWheel === exitWheel) {
+            activeExitWheel = null;
+        }
+    };
+};
+
+window.configureExitWheel = configureExitWheel;
+
+/**
+ * Builds the pitch selection pie menu with optional accidentals
+ * and an optional octave wheel.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {string[]} noteLabels Labels shown in the pitch wheel
+ * @param {string[]} noteValues Values mapped to labels
+ * @param {Array} accidentals Accidental labels/values for the inner wheel
+ * @param {string} note Currently selected note value
+ * @param {string} accidental Currently selected accidental
+ * @param {boolean} [custom=false] Whether to use the custom-note layout
+ * @returns {void}
+ */
+const piemenuPitches = (block, noteLabels, noteValues, accidentals, note, accidental, custom) => {
+    let prevPitch = noteLabels.indexOf(note);
+    // wheelNav pie menu for pitch selection
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    if (custom === undefined) {
+        custom = false;
+    }
+
+    // Some blocks have both pitch and octave, so we can modify
+    // both at once.
+    const hasOctaveWheel =
+        block.connections[0] !== null &&
+        ["pitch", "setpitchnumberoffset", "invert1", "tofrequency"].includes(
+            block.blocks.blockList[block.connections[0]].name
+        );
+
+    // If we are attached to a set key block, we want to order
+    // pitch by fifths.
+    if (
+        block.connections[0] !== null &&
+        ["setkey", "setkey2"].includes(block.blocks.blockList[block.connections[0]].name)
+    ) {
+        noteLabels = ["C", "G", "D", "A", "E", "B", "F"];
+        noteValues = ["C", "G", "D", "A", "E", "B", "F"];
+    }
+
+    const wheelDiv = showWheelDiv(); // Show the div but keep it invisible initially
+    wheelDiv.style.opacity = "0";
+
+    // The pitch selector
+    const wheelSize = getPieMenuSize(block);
+    block._pitchWheel = new wheelnav("wheelDiv", null, wheelSize, wheelSize);
+
+    if (!custom) {
+        // The accidental selector
+        block._accidentalsWheel = new wheelnav("_accidentalsWheel", block._pitchWheel.raphael);
+    }
+    // The octave selector
+    if (hasOctaveWheel) {
+        block._octavesWheel = new wheelnav("_octavesWheel", block._pitchWheel.raphael);
+    }
+
+    // The exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._pitchWheel.raphael);
+
+    wheelnav.cssMode = true;
+
+    block._pitchWheel.keynavigateEnabled = true;
+
+    block._pitchWheel.colors = platformColor.pitchWheelcolors;
+    block._pitchWheel.slicePathFunction = slicePath().DonutSlice;
+    block._pitchWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._pitchWheel.slicePathCustom.minRadiusPercent = 0.2;
+    if (!custom) {
+        block._pitchWheel.slicePathCustom.maxRadiusPercent = 0.5;
+    } else {
+        block._pitchWheel.slicePathCustom.maxRadiusPercent = 0.75;
+    }
+
+    block._pitchWheel.sliceSelectedPathCustom = block._pitchWheel.slicePathCustom;
+    block._pitchWheel.sliceInitPathCustom = block._pitchWheel.slicePathCustom;
+
+    block._pitchWheel.animatetime = 0; // 300;
+    block._pitchWheel.createWheel(noteLabels);
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    if (!custom) {
+        block._accidentalsWheel.colors = platformColor.accidentalsWheelcolors;
+        block._accidentalsWheel.slicePathFunction = slicePath().DonutSlice;
+        block._accidentalsWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+        block._accidentalsWheel.slicePathCustom.minRadiusPercent = 0.5;
+        block._accidentalsWheel.slicePathCustom.maxRadiusPercent = 0.75;
+        block._accidentalsWheel.sliceSelectedPathCustom = block._accidentalsWheel.slicePathCustom;
+        block._accidentalsWheel.sliceInitPathCustom = block._accidentalsWheel.slicePathCustom;
+
+        const accidentalLabels = [];
+        for (let i = 0; i < accidentals.length; i++) {
+            accidentalLabels.push(accidentals[i]);
+        }
+
+        for (let i = 0; i < 9; i++) {
+            accidentalLabels.push(null);
+            block._accidentalsWheel.colors.push(platformColor.accidentalsWheelcolorspush);
+        }
+
+        block._accidentalsWheel.animatetime = 0; // 300;
+        block._accidentalsWheel.createWheel(accidentalLabels);
+        block._accidentalsWheel.setTooltips([
+            _("double sharp"),
+            _("sharp"),
+            _("natural"),
+            _("flat"),
+            _("double flat")
+        ]);
+    }
+
+    if (hasOctaveWheel) {
+        block._octavesWheel.colors = platformColor.octavesWheelcolors;
+        block._octavesWheel.slicePathFunction = slicePath().DonutSlice;
+        block._octavesWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+        block._octavesWheel.slicePathCustom.minRadiusPercent = 0.75;
+        block._octavesWheel.slicePathCustom.maxRadiusPercent = 0.95;
+        block._octavesWheel.sliceSelectedPathCustom = block._octavesWheel.slicePathCustom;
+        block._octavesWheel.sliceInitPathCustom = block._octavesWheel.slicePathCustom;
+        const octaveLabels = [
+            "8",
+            "7",
+            "6",
+            "5",
+            "4",
+            "3",
+            "2",
+            "1",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+        ];
+        block._octavesWheel.animatetime = 0; // 300;
+        block._octavesWheel.createWheel(octaveLabels);
+    }
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const displaySize = 400;
+    const halfWheelSize = displaySize / 2;
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - halfWheelSize;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - halfWheelSize;
+
+    positionWheelDiv(block, displaySize, desiredLeft, desiredTop);
+
+    // Navigate to the current note value.
+    let i = noteValues.indexOf(note);
+    if (i === -1) {
+        if (custom) {
+            i = 0;
+        } else {
+            i = 4;
+        }
+    }
+
+    prevPitch = i;
+
+    block._pitchWheel.navigateWheel(i);
+
+    const OFFSET = {
+        major: 1,
+        dorian: 2,
+        phrygian: 3,
+        lydian: 4,
+        mixolydian: 5,
+        minor: 6,
+        locrian: 7
+    };
+
+    const ROTATION = { A: 2, B: 1, C: 0, D: 6, E: 5, F: 4, G: 3 };
+
+    const k = OFFSET[block.activity.KeySignatureEnv[1]];
+
+    let key;
+    const attrList = ["", SHARP, FLAT];
+    for (const j in attrList) {
+        for (const i in NOTENAMES) {
+            const tempScale = buildScale(NOTENAMES[i] + attrList[j] + " major")[0];
+            if (tempScale[k - 1] === block.activity.KeySignatureEnv[0]) {
+                key = NOTENAMES[i] + attrList[j];
+                break;
+            }
+        }
+        if (key !== undefined) {
+            break;
+        }
+    }
+    if (key === undefined) {
+        key = block.activity.KeySignatureEnv[0] || "C";
+    }
+    let scale = buildScale(key + " major")[0];
+    scale = scale.splice(0, scale.length - 1);
+
+    for (let j = 0; j < ROTATION[key[0]]; j++) {
+        scale.push(scale.shift());
+    }
+
+    // Auto-selection of sharps and flats in fixed solfege handles the
+    // case of opening the pie-menu, not whilst in the pie-menu.
+    // Skip auto-selection if user already has a non-natural accidental (Issue #4886)
+    // or if a manual accidental/natural was explicitly selected (Issue #9003).
+    const hasManualAccidental =
+        block.manualAccidental !== undefined && block.manualAccidental !== null;
+    if (hasManualAccidental) {
+        accidental = block.manualAccidental;
+    }
+    const pitchHasAccidental = hasManualAccidental || (accidental !== "" && accidental !== NATURAL);
+    if (
+        !pitchHasAccidental &&
+        ((!block.activity.KeySignatureEnv[2] && block.name === "solfege") ||
+            (block.name === "notename" &&
+                // A note name block on its own has a null parent, not undefined.
+                !["setkey", "setkey2"].includes(
+                    block.blocks.blockList[block.connections[0]]?.name
+                )))
+    ) {
+        if (
+            scale[scale.length - 1 - i][0] === FIXEDSOLFEGE[note] ||
+            scale[scale.length - 1 - i][0] === note
+        ) {
+            accidental = scale[scale.length - 1 - i].slice(1);
+        } else if (EQUIVALENTACCIDENTALS && EQUIVALENTACCIDENTALS[scale[scale.length - 1 - i]]) {
+            accidental = EQUIVALENTACCIDENTALS[scale[scale.length - 1 - i]].slice(1);
+        } else {
+            accidental = "";
+        }
+        block.value = block.value
+            .replace(SHARP, "")
+            .replace(FLAT, "")
+            .replace(DOUBLESHARP, "")
+            .replace(DOUBLEFLAT, "");
+        block.value += accidental;
+        block.text.text = block.value;
+    }
+
+    if (!custom) {
+        // Navigate to the current accidental value.
+        // Use the accidental parameter directly - it's already correctly parsed from block value.
+        let accidentalIndex = 2; // Default to "natural"
+        if (accidental === DOUBLESHARP) {
+            accidentalIndex = 0;
+        } else if (accidental === SHARP) {
+            accidentalIndex = 1;
+        } else if (accidental === NATURAL || accidental === "") {
+            accidentalIndex = 2;
+        } else if (accidental === FLAT) {
+            accidentalIndex = 3;
+        } else if (accidental === DOUBLEFLAT) {
+            accidentalIndex = 4;
+        }
+        block._accidentalsWheel.navigateWheel(accidentalIndex);
+    }
+
+    if (hasOctaveWheel) {
+        // Use the octave associated with the block, if available.
+        const pitchOctave = block.blocks.findPitchOctave(block.connections[0]);
+
+        // Navigate to current octave.
+        block._octavesWheel.navigateWheel(8 - pitchOctave);
+        // const prevOctave = 8 - pitchOctave;
+    }
+
+    // Now that everything is set up, make the wheel visible with a smooth transition
+    wheelDiv.style.transition = "opacity 0.15s ease-in";
+    setTimeout(() => {
+        wheelDiv.style.opacity = "1";
+    }, 50);
+
+    // Set up event handlers.
+    const that = block;
+    const selection = {
+        note: note,
+        attr: accidental
+    };
+
+    /*
+     * Preview the selected pitch using the synth
+     * @return{void}
+     * @private
+     */
+    const __pitchPreview = async () => {
+        try {
+            // Ensure audio context is initialized first
+            await setupAudioContext();
+
+            // Ensure synth is initialized before proceeding
+            if (!that.activity.logo.synth) {
+                that.activity.logo.synth = new Synth();
+            }
+
+            // Always ensure tone is initialized
+            if (!that.activity.logo.synth.tone) {
+                that.activity.logo.synth.newTone();
+            }
+
+            const label = that._pitchWheel.navItems[that._pitchWheel.selectedNavItemIndex].title;
+            const i = noteLabels.indexOf(label);
+
+            const noteCount = noteLabels.length;
+            const halfSpan = noteCount / 2;
+            const deltaPitch = i - prevPitch;
+            let delta;
+            if (deltaPitch > halfSpan) {
+                delta = deltaPitch - noteCount;
+            } else if (deltaPitch < -halfSpan) {
+                delta = deltaPitch + noteCount;
+            } else {
+                delta = deltaPitch;
+            }
+
+            // If we wrapped across C, we need to adjust the octave.
+            let deltaOctave = 0;
+            if (prevPitch + delta > noteCount - 1) {
+                deltaOctave = -1;
+            } else if (prevPitch + delta < 0) {
+                deltaOctave = 1;
+            }
+            let attr;
+            prevPitch = i;
+            let note = noteValues[i];
+            if (!custom) {
+                attr =
+                    that._accidentalsWheel.navItems[that._accidentalsWheel.selectedNavItemIndex]
+                        .title;
+                if (label === " ") {
+                    return;
+                } else if (attr !== "♮") {
+                    note += attr;
+                }
+            }
+
+            let octave;
+            if (hasOctaveWheel) {
+                // Always use the current octave from the wheel
+                octave = Number(
+                    that._octavesWheel.navItems[that._octavesWheel.selectedNavItemIndex].title
+                );
+            } else {
+                octave = 4;
+            }
+
+            octave += deltaOctave;
+            if (octave < 1) {
+                octave = 1;
+            } else if (octave > 8) {
+                octave = 8;
+            }
+
+            // Store the final octave back in selection
+            selection["octave"] = octave;
+
+            if (hasOctaveWheel && deltaOctave !== 0) {
+                that._octavesWheel.navigateWheel(8 - octave);
+                that.blocks.setPitchOctave(that.connections[0], octave);
+            }
+
+            const keySignature =
+                block.activity.KeySignatureEnv[0] + " " + block.activity.KeySignatureEnv[1];
+
+            let obj;
+            if (that.name === "scaledegree2") {
+                note = note.replace(attr, "");
+                note = SOLFEGENAMES[note - 1];
+                note += attr;
+                obj = getNote(
+                    note,
+                    octave,
+                    0,
+                    keySignature,
+                    true,
+                    null,
+                    that.activity.errorMsg,
+                    that.activity.logo.synth.inTemperament
+                );
+            } else {
+                obj = getNote(
+                    note,
+                    octave,
+                    0,
+                    keySignature,
+                    block.activity.KeySignatureEnv[2],
+                    null,
+                    that.activity.errorMsg,
+                    that.activity.logo.synth.inTemperament
+                );
+            }
+            if (!custom) {
+                obj[0] = obj[0].replace(SHARP, "#").replace(FLAT, "b");
+            }
+
+            // Create and load synth if needed
+            if (!instruments[0] || !instruments[0][DEFAULTVOICE]) {
+                try {
+                    that.activity.logo.synth.createDefaultSynth(0);
+                    await that.activity.logo.synth.loadSynth(0, DEFAULTVOICE);
+                } catch (e) {
+                    return;
+                }
+            }
+
+            // Ensure synth is properly initialized
+            if (!that.activity.logo.synth.tone) {
+                that.activity.logo.synth.newTone();
+            }
+
+            // Set volume
+            try {
+                that.activity.logo.synth.setMasterVolume(PREVIEWVOLUME);
+                that.activity.logo.synth.setVolume(0, DEFAULTVOICE, PREVIEWVOLUME);
+            } catch (e) {
+                return;
+            }
+
+            // Trigger note with proper error handling
+            if (!that._triggerLock) {
+                that._triggerLock = true;
+                try {
+                    await that.activity.logo.synth.trigger(
+                        0,
+                        [obj[0] + obj[1]],
+                        1 / 8,
+                        DEFAULTVOICE,
+                        null,
+                        null,
+                        false
+                    );
+                    // Trigger note with proper error handling
+                    // Announce the previewed note to screen readers (screen
+                    // reader only, no visual message). Naturally throttled by
+                    // _triggerLock, so rapid wheel navigation doesn't spam.
+                    announceToScreenReader(_("played") + " " + obj[0] + obj[1]);
+                } catch (e) {
+                    console.error("Synth trigger error:", e);
+                }
+                setTimeout(() => {
+                    that._triggerLock = false;
+                }, 125);
+            }
+        } catch (e) {
+            console.error("Error in pitch preview:", e);
+        }
+    };
+
+    let isSyncingAccidental = false;
+
+    const __selectionChangedSolfege = () => {
+        const selectedPitchIndex = that._pitchWheel.selectedNavItemIndex;
+        const pitchChanged = selectedPitchIndex !== prevPitch;
+        if (pitchChanged) {
+            that.manualAccidental = null;
+            selection["attr"] = "";
+        } else if (that.manualAccidental !== null) {
+            selection["attr"] = that.manualAccidental;
+        }
+
+        selection["note"] = that._pitchWheel.navItems[selectedPitchIndex].title;
+        const i = noteLabels.indexOf(selection["note"]);
+        that.value = noteValues[i];
+
+        // Auto-selection of sharps and flats in fixed solfege handles
+        // the case of opening the pie-menu, not whilst in the
+        // pie-menu. FIXEDSOLFEGE converts solfege to alphabet, needed
+        // for solfege pie-menu In. case of alphabet, direct comparison
+        // is performed.
+        if (
+            (!block.activity.KeySignatureEnv[2] && that.name === "solfege") ||
+            (that.name === "notename" &&
+                !["setkey", "setkey2"].includes(that.blocks.blockList[that.connections[0]]?.name))
+        ) {
+            if (pitchChanged || that.manualAccidental === null) {
+                let scaleIdx = scale.indexOf(selection["note"]);
+                if (scaleIdx === -1) {
+                    scaleIdx = scale.indexOf(that.value);
+                }
+                if (scaleIdx === -1) {
+                    scaleIdx = NOTENAMES.indexOf(FIXEDSOLFEGE[selection["note"]]);
+                }
+                if (scaleIdx === -1) {
+                    scaleIdx = NOTENAMES.indexOf(FIXEDSOLFEGE[that.value]);
+                }
+                if (scaleIdx !== -1) {
+                    if (
+                        NOTENAMES.includes(selection["note"]) ||
+                        scale[scaleIdx][0] === FIXEDSOLFEGE[selection["note"]] ||
+                        scale[scaleIdx][0] === FIXEDSOLFEGE[that.value] ||
+                        scale[scaleIdx][0] === selection["note"]
+                    ) {
+                        selection["attr"] = scale[scaleIdx].slice(1);
+                    } else {
+                        selection["attr"] = EQUIVALENTACCIDENTALS[scale[scaleIdx]].slice(1);
+                    }
+                }
+                isSyncingAccidental = true;
+                switch (selection["attr"]) {
+                    case DOUBLEFLAT:
+                        that._accidentalsWheel.navigateWheel(4);
+                        break;
+                    case FLAT:
+                        that._accidentalsWheel.navigateWheel(3);
+                        break;
+                    case NATURAL:
+                        that._accidentalsWheel.navigateWheel(2);
+                        break;
+                    case SHARP:
+                        that._accidentalsWheel.navigateWheel(1);
+                        break;
+                    case DOUBLESHARP:
+                        that._accidentalsWheel.navigateWheel(0);
+                        break;
+                    default:
+                        that._accidentalsWheel.navigateWheel(2);
+                        break;
+                }
+                isSyncingAccidental = false;
+            }
+        }
+        if (selection["attr"] && selection["attr"] !== "♮") {
+            that.value = noteValues[i] + selection["attr"];
+            that.text.text = selection["note"] + selection["attr"];
+        } else {
+            that.value = noteValues[i];
+            that.text.text = selection["note"];
+        }
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+
+        if (hasOctaveWheel) {
+            // Set the octave of the pitch block, if available.
+            const octave = Number(
+                that._octavesWheel.navItems[that._octavesWheel.selectedNavItemIndex].title
+            );
+            that.blocks.setPitchOctave(that.connections[0], octave);
+            // Update the state with the current octave
+            selection["octave"] = octave;
+        }
+
+        if (
+            that.connections[0] !== null &&
+            ["setkey", "setkey2"].includes(that.blocks.blockList[that.connections[0]].name)
+        ) {
+            // We may need to update the mode widget.
+            that.activity.logo.modeBlock = that.blockIndex;
+        }
+    };
+
+    const __selectionChangedOctave = () => {
+        const octave = Number(
+            that._octavesWheel.navItems[that._octavesWheel.selectedNavItemIndex].title
+        );
+        that.blocks.setPitchOctave(that.connections[0], octave);
+
+        // Update the state before preview
+        selection["octave"] = octave;
+    };
+
+    const __selectionChangedAccidental = () => {
+        if (isSyncingAccidental) {
+            return;
+        }
+        const i = that._pitchWheel.selectedNavItemIndex;
+        selection["note"] = noteLabels[i];
+        const selectedNoteValue = noteValues[i];
+
+        selection["attr"] =
+            that._accidentalsWheel.navItems[that._accidentalsWheel.selectedNavItemIndex].title;
+
+        that.manualAccidental = selection["attr"];
+
+        if (selection["attr"] === "♮") {
+            that.value = selectedNoteValue;
+            that.text.text = selection["note"];
+        } else {
+            that.value = selectedNoteValue + selection["attr"];
+            that.text.text = selection["note"] + selection["attr"];
+        }
+
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+
+        // Ensure we have the current octave
+        if (hasOctaveWheel) {
+            selection["octave"] = Number(
+                that._octavesWheel.navItems[that._octavesWheel.selectedNavItemIndex].title
+            );
+        }
+    };
+
+    // Set up handlers for pitch preview.
+    const setupAudioContext = async () => {
+        try {
+            await Tone.start();
+        } catch (e) {
+            // Tone.start() may fail if the user has not interacted with the page yet
+            // or if the audio context is already running. We can safely ignore this.
+            console.debug("Tone.start() skipped or failed", e);
+        }
+    };
+
+    const __selectionChangedSolfegeWithAudio = async () => {
+        __selectionChangedSolfege();
+    };
+
+    const __selectionChangedOctaveWithAudio = async () => {
+        __selectionChangedOctave();
+    };
+
+    const __selectionChangedAccidentalWithAudio = async () => {
+        __selectionChangedAccidental();
+    };
+
+    // Set up handlers for pitch preview.
+    const __previewWrapper = async () => {
+        await setupAudioContext();
+        if (!that.activity.logo.synth.tone) {
+            that.activity.logo.synth.newTone();
+        }
+        await __pitchPreview();
+    };
+
+    for (let i = 0; i < noteValues.length; i++) {
+        block._pitchWheel.navItems[i].navigateFunction = async () => {
+            __selectionChangedSolfege();
+            await __previewWrapper();
+        };
+    }
+
+    if (!custom) {
+        for (let i = 0; i < accidentals.length; i++) {
+            block._accidentalsWheel.navItems[i].navigateFunction = async () => {
+                __selectionChangedAccidental();
+                await __previewWrapper();
+            };
+        }
+    }
+
+    if (hasOctaveWheel) {
+        for (let i = 0; i < 8; i++) {
+            block._octavesWheel.navItems[i].navigateFunction = async () => {
+                __selectionChangedOctave();
+                await __previewWrapper();
+            };
+        }
+    }
+
+    enableWheelScroll(block._pitchWheel, noteLabels.length);
+
+    // Hide the widget when the exit button is clicked.
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        that._piemenuExitTime = new Date().getTime();
+        const selectedNote = that._pitchWheel.navItems[that._pitchWheel.selectedNavItemIndex].title;
+        const selectedAccidental =
+            !custom && that._accidentalsWheel
+                ? that._accidentalsWheel.navItems[that._accidentalsWheel.selectedNavItemIndex].title
+                : "";
+
+        // Update the block's displayed text with the note and accidental
+        const i = that._pitchWheel.selectedNavItemIndex;
+        const selectedNoteValue = noteValues[i];
+
+        if (selectedAccidental === "♮" || selectedAccidental === "") {
+            // Natural or no accidental: display only the note
+            that.value = selectedNoteValue;
+            that.text.text = selectedNote;
+        } else {
+            // Combine note and accidental for display
+            that.value = selectedNoteValue + selectedAccidental;
+            that.text.text = selectedNote + selectedAccidental;
+        }
+
+        // Ensure proper layering of the text element
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        // Refresh the block's cache
+        that.updateCache();
+
+        // If this block is a tracked row in an already-open Phrase Maker,
+        // refresh that row so the matrix reflects the new pitch immediately.
+        if (hasOctaveWheel && that.name !== "scaledegree2") {
+            const phraseMaker = that.activity.logo.phraseMaker;
+            if (phraseMaker && typeof phraseMaker.refreshRowForBlock === "function") {
+                const newOctave = Number(
+                    that._octavesWheel.navItems[that._octavesWheel.selectedNavItemIndex].title
+                );
+                phraseMaker.refreshRowForBlock(
+                    that.connections[0],
+                    selectedNoteValue,
+                    selectedAccidental,
+                    newOctave
+                );
+            }
+        }
+
+        // Hide the pie menu and remove the wheels
+        hideWheelDiv();
+        that._pitchWheel.removeWheel();
+        if (!custom) {
+            that._accidentalsWheel.removeWheel();
+        }
+        that._exitWheel.removeWheel();
+        if (hasOctaveWheel) {
+            that._octavesWheel.removeWheel();
+        }
+        if (that.label) {
+            that.label.style.display = "none";
+        }
+        if (docById("labelDiv") && docById("labelDiv").classList) {
+            docById("labelDiv").classList.remove("hasKeyboard");
+        }
+    };
+};
+
+/**
+ * Builds the custom temperament pie menu with an optional octave wheel.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {Object} noteLabels Custom note label map keyed by temperament
+ * @param {string[]} customLabels Identifiers for available custom sets
+ * @param {string} selectedCustom Currently selected custom set key
+ * @param {number|string} selectedNote Currently selected note within the set
+ * @returns {void}
+ */
+const piemenuCustomNotes = (block, noteLabels, customLabels, selectedCustom, selectedNote) => {
+    // pie menu for customNote selection
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    showWheelDiv();
+
+    // Some blocks have both pitch and octave, so we can modify
+    // both at once.
+    const hasOctaveWheel =
+        block.connections[0] !== null &&
+        ["pitch", "setpitchnumberoffset", "invert1", "tofrequency", "custompitch"].includes(
+            block.blocks.blockList[block.connections[0]].name
+        );
+
+    // Use advanced constructor for more wheelnav on same div
+    block._customWheel = new wheelnav("wheelDiv", null, 800, 800);
+
+    block._cusNoteWheel = new wheelnav("_cusNoteWheel", block._customWheel.raphael);
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._customWheel.raphael);
+
+    // the octave selector
+    if (hasOctaveWheel) {
+        block._octavesWheel = new wheelnav("_octavesWheel", block._customWheel.raphael);
+    }
+
+    wheelnav.cssMode = true;
+
+    block._customWheel.keynavigateEnabled = true;
+
+    //Customize slicePaths for proper size
+    block._customWheel.colors = platformColor.intervalNameWheelcolors;
+    block._customWheel.slicePathFunction = slicePath().DonutSlice;
+    block._customWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._customWheel.slicePathCustom.minRadiusPercent = 0.1;
+    block._customWheel.slicePathCustom.maxRadiusPercent = 0.5;
+    block._customWheel.sliceSelectedPathCustom = block._customWheel.slicePathCustom;
+    block._customWheel.sliceInitPathCustom = block._customWheel.slicePathCustom;
+    block._customWheel.titleRotateAngle = 0;
+    block._customWheel.animatetime = 0; // 300;
+    block._customWheel.clickModeRotate = false;
+    block._customWheel.createWheel(customLabels);
+
+    block._cusNoteWheel.colors = platformColor.intervalWheelcolors;
+    block._cusNoteWheel.slicePathFunction = slicePath().DonutSlice;
+    block._cusNoteWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._cusNoteWheel.slicePathCustom.minRadiusPercent = 0.5;
+    block._cusNoteWheel.slicePathCustom.maxRadiusPercent = 0.85;
+    //block._cusNoteWheel.titleRotateAngle = 0;
+    block._cusNoteWheel.titleFont = "100 24px Impact, sans-serif";
+    block._cusNoteWheel.sliceSelectedPathCustom = block._cusNoteWheel.slicePathCustom;
+    block._cusNoteWheel.sliceInitPathCustom = block._cusNoteWheel.slicePathCustom;
+
+    if (hasOctaveWheel) {
+        block._octavesWheel.colors = platformColor.octavesWheelcolors;
+        block._octavesWheel.slicePathFunction = slicePath().DonutSlice;
+        block._octavesWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+        block._octavesWheel.slicePathCustom.minRadiusPercent = 0.85;
+        block._octavesWheel.slicePathCustom.maxRadiusPercent = 1;
+        block._octavesWheel.sliceSelectedPathCustom = block._octavesWheel.slicePathCustom;
+        block._octavesWheel.sliceInitPathCustom = block._octavesWheel.slicePathCustom;
+        const octaveLabels = [
+            "8",
+            "7",
+            "6",
+            "5",
+            "4",
+            "3",
+            "2",
+            "1",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+        ];
+        block._octavesWheel.animatetime = 0; // 300;
+        block._octavesWheel.createWheel(octaveLabels);
+    }
+
+    block._cusNoteWheel.titleRotateAngle = 0;
+    block._cusNoteWheel.animatetime = 0; // 300;
+    const labelsDict = {};
+    let labels = [];
+    let blockCustom = 0;
+    let max = 0;
+    for (const t of customLabels) {
+        max = max > noteLabels[t]["pitchNumber"] ? max : noteLabels[t]["pitchNumber"];
+    }
+
+    // There seems to be two different representations... maybe because
+    // of some legacy projects restoring customTemperamentNotes
+    for (const t of customLabels) {
+        labelsDict[t] = [];
+        for (const k in noteLabels[t]) {
+            if (k !== "pitchNumber" && k !== "interval" && k !== "octaveRatio") {
+                if (typeof noteLabels[t][k] === "number") {
+                    if (!isNaN(Number(k))) {
+                        labelsDict[t].push(k);
+                        blockCustom++;
+                    }
+                } else {
+                    if (noteLabels[t][k].length === 3) {
+                        labelsDict[t].push(noteLabels[t][k][1]);
+                        blockCustom++;
+                    } else {
+                        for (let ii = 0; ii < noteLabels[t][k].length; ii++) {
+                            labelsDict[t].push(noteLabels[t][k][1]);
+                            blockCustom++;
+                        }
+                    }
+                }
+            }
+        }
+        for (let extra = max - blockCustom; extra > 0; extra--) {
+            // labels.push("");
+        }
+        blockCustom = 0;
+        // Order notes descending (highest pitch to lowest / tonic),
+        // matching notename, solfege, and scaledegree pie menus.
+        labelsDict[t].reverse();
+    }
+    if (!(selectedCustom in labelsDict)) {
+        selectedCustom = customLabels[0];
+    }
+    for (let i = 0; i < max; i++) {
+        if (i < labelsDict[selectedCustom].length) {
+            labels.push(labelsDict[selectedCustom][i]);
+        } else {
+            labels.push("");
+        }
+    }
+    block._cusNoteWheel.navAngle = -(180 / customLabels.length) + 180 / labels.length;
+    block._cusNoteWheel.createWheel(labels);
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.1;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    // Avoid auto-selecting the close button on open.
+
+    const that = block;
+
+    // position widget
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - 200;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - 200;
+    positionWheelDiv(block, 400, desiredLeft, desiredTop);
+
+    if (hasOctaveWheel) {
+        // Use the octave associated with the block, if available.
+        const pitchOctave = block.blocks.findPitchOctave(block.connections[0]);
+
+        // Navigate to current octave
+        block._octavesWheel.navigateWheel(8 - pitchOctave);
+    }
+
+    let prevPitch = 0;
+
+    // Add function to each main menu for show/hide sub menus
+    const __setupAction = i => {
+        that._customWheel.navItems[i].navigateFunction = () => {
+            that.customID =
+                that._customWheel.navItems[that._customWheel.selectedNavItemIndex].title;
+            labels = [];
+            for (let ii = 0; ii < max; ii++) {
+                if (ii < labelsDict[that.customID].length) {
+                    labels.push(labelsDict[that.customID][ii]);
+                } else {
+                    labels.push("");
+                }
+            }
+            // Update the navItems
+            for (let ii = 0; ii < labels.length; ii++) {
+                if (labels[ii].length === 0) {
+                    that._cusNoteWheel.navItems[ii].navItem.hide();
+                } else {
+                    that._cusNoteWheel.navItems[ii].title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].navItem.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].basicNavTitleMax.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].basicNavTitleMin.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].hoverNavTitleMax.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].hoverNavTitleMin.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].selectedNavTitleMax.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].selectedNavTitleMin.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].initNavTitle.title = labels[ii];
+                    that._cusNoteWheel.navItems[ii].navItem.show();
+                }
+            }
+            that._customWheel.refreshWheel();
+            that._cusNoteWheel.navigateWheel(0);
+            prevPitch = 0;
+        };
+    };
+
+    // Set up action for interval name so number tabs will
+    // initialize on load.
+    for (let ii = 0; ii < customLabels.length; ii++) {
+        __setupAction(ii);
+    }
+
+    // navigate to a specific starting point
+
+    let ii;
+    for (ii = 0; ii < customLabels.length; ii++) {
+        if (selectedCustom === customLabels[ii]) {
+            break;
+        }
+    }
+
+    if (ii === customLabels.length) {
+        ii = 0;
+    }
+
+    block._customWheel.navigateWheel(ii);
+    that.customID = selectedCustom;
+
+    const cleanSelectedNote = (selectedNote || "").replace(/\([+-]?\d+¢\)/g, "");
+    let initialIndex = labels.findIndex(
+        l => l && l.replace(/\([+-]?\d+¢\)/g, "") === cleanSelectedNote
+    );
+    if (initialIndex === -1) {
+        initialIndex = 0;
+    }
+
+    block._cusNoteWheel.navigateWheel(initialIndex);
+    prevPitch = initialIndex;
+
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+    };
+
+    const __selectionChanged = async () => {
+        const label = that._customWheel.navItems[that._customWheel.selectedNavItemIndex].title;
+        that.customID = label;
+        const rawNote = that._cusNoteWheel.navItems[that._cusNoteWheel.selectedNavItemIndex].title;
+        const centsMatch = (that.value || "").match(/\([+-]?\d+¢\)/);
+        const note = (rawNote || "").replace(/\([+-]?\d+¢\)/g, "");
+        that.value = centsMatch ? note + centsMatch[0] : note;
+        that.text.text = centsMatch ? note + centsMatch[0] : note;
+
+        let octave = 4;
+        if (hasOctaveWheel) {
+            octave = Number(
+                that._octavesWheel.navItems[that._octavesWheel.selectedNavItemIndex].title
+            );
+        }
+
+        const i = that._cusNoteWheel.selectedNavItemIndex;
+        const currentLabels = labelsDict[label] || labels.filter(l => l.length > 0);
+        const noteCount = currentLabels.length;
+        let deltaOctave = 0;
+        if (noteCount > 1 && prevPitch !== undefined && prevPitch !== -1) {
+            const halfSpan = noteCount / 2;
+            const deltaPitch = i - prevPitch;
+            let delta;
+            if (deltaPitch > halfSpan) {
+                delta = deltaPitch - noteCount;
+            } else if (deltaPitch < -halfSpan) {
+                delta = deltaPitch + noteCount;
+            } else {
+                delta = deltaPitch;
+            }
+
+            if (prevPitch + delta > noteCount - 1) {
+                deltaOctave = -1;
+            } else if (prevPitch + delta < 0) {
+                deltaOctave = 1;
+            }
+        }
+        prevPitch = i;
+
+        octave += deltaOctave;
+        if (octave < 1) {
+            octave = 1;
+        } else if (octave > 8) {
+            octave = 8;
+        }
+
+        if (hasOctaveWheel && deltaOctave !== 0) {
+            that._octavesWheel.navigateWheel(8 - octave);
+            that.blocks.setPitchOctave(that.connections[0], octave);
+        }
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+
+        try {
+            await Tone.start();
+        } catch (e) {
+            console.debug("Tone.start() skipped or failed", e);
+        }
+
+        if (!instruments[0] || !instruments[0][DEFAULTVOICE]) {
+            try {
+                that.activity.logo.synth.createDefaultSynth(0);
+                await that.activity.logo.synth.loadSynth(0, DEFAULTVOICE);
+            } catch (e) {
+                console.debug(e);
+            }
+        }
+
+        if (!that.activity.logo.synth.tone) {
+            that.activity.logo.synth.newTone();
+        }
+
+        try {
+            that.activity.logo.synth.setMasterVolume(PREVIEWVOLUME);
+            that.activity.logo.synth.setVolume(0, DEFAULTVOICE, PREVIEWVOLUME);
+        } catch (e) {
+            console.debug(e);
+        }
+
+        if (!that._triggerLock) {
+            that._triggerLock = true;
+            try {
+                const customID = that.customID || label || selectedCustom;
+                const no = that.activity.logo.synth.getCustomFrequency([note + octave], customID);
+                await that.activity.logo.synth.trigger(
+                    0,
+                    no !== undefined && no !== "undefined" ? no : [note + octave],
+                    1 / 8,
+                    DEFAULTVOICE,
+                    null,
+                    null,
+                    false
+                );
+                announceToScreenReader(_("played") + " " + note + octave);
+            } catch (e) {
+                console.error("Synth trigger error:", e);
+            }
+            setTimeout(() => {
+                that._triggerLock = false;
+            }, 125);
+        }
+    };
+
+    const __selectionChangedOctave = () => {
+        const octave = Number(
+            that._octavesWheel.navItems[that._octavesWheel.selectedNavItemIndex].title
+        );
+        that.blocks.setPitchOctave(that.connections[0], octave);
+        __selectionChanged();
+    };
+
+    if (hasOctaveWheel) {
+        for (let i = 0; i < 8; i++) {
+            block._octavesWheel.navItems[i].navigateFunction = __selectionChangedOctave;
+        }
+    }
+
+    // Set up handlers for preview.
+    for (let i = 0; i < labels.length; i++) {
+        block._cusNoteWheel.navItems[i].navigateFunction = __selectionChanged;
+    }
+
+    block._exitWheel.navItems[0].navigateFunction = __exitMenu;
+};
+
+/**
+ * Builds the accidental selection pie menu.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {string[]} accidentalLabels Display labels for accidentals
+ * @param {Array} accidentalValues Values mapped to labels
+ * @param {*} accidental Currently selected accidental
+ * @returns {void}
+ */
+const piemenuAccidentals = (block, accidentalLabels, accidentalValues, accidental) => {
+    // wheelNav pie menu for accidental selection
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    showWheelDiv();
+
+    // the accidental selector
+    const wheelSize = getPieMenuSize(block);
+    block._accidentalWheel = new wheelnav("wheelDiv", null, wheelSize, wheelSize);
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._accidentalWheel.raphael);
+
+    const labels = [];
+    for (let i = 0; i < accidentalLabels.length; i++) {
+        labels.push(last(accidentalLabels[i].split(" ")));
+    }
+
+    labels.push(null);
+
+    wheelnav.cssMode = true;
+
+    block._accidentalWheel.keynavigateEnabled = true;
+
+    block._accidentalWheel.colors = platformColor.accidentalsWheelcolors;
+    block._accidentalWheel.slicePathFunction = slicePath().DonutSlice;
+    block._accidentalWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._accidentalWheel.slicePathCustom.minRadiusPercent = 0.2;
+    block._accidentalWheel.slicePathCustom.maxRadiusPercent = 0.6;
+    block._accidentalWheel.sliceSelectedPathCustom = block._accidentalWheel.slicePathCustom;
+    block._accidentalWheel.sliceInitPathCustom = block._accidentalWheel.slicePathCustom;
+    block._accidentalWheel.titleRotateAngle = 0;
+    block._accidentalWheel.animatetime = 0; // 300;
+    block._accidentalWheel.createWheel(labels);
+    block._accidentalWheel.setTooltips(accidentalLabels);
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    const __selectionChanged = () => {
+        const label =
+            that._accidentalWheel.navItems[that._accidentalWheel.selectedNavItemIndex].title;
+        const i = labels.indexOf(label);
+        that.value = accidentalValues[i];
+        that.text.text = accidentalLabels[i];
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    /*
+     * Exit menu
+     * @return{void}
+     * @private
+     */
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        that._accidentalWheel.removeWheel();
+        that._exitWheel.removeWheel();
+    };
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - 200;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - 200;
+    positionWheelDiv(block, 300, desiredLeft, desiredTop);
+
+    // Navigate to the current accidental value.
+    let i = accidentalValues.indexOf(accidental);
+    if (i === -1) {
+        i = 2;
+    }
+
+    block._accidentalWheel.navigateWheel(i);
+
+    // Hide the widget when the selection is made.
+    for (let i = 0; i < accidentalLabels.length; i++) {
+        block._accidentalWheel.navItems[i].navigateFunction = () => {
+            __selectionChanged();
+            __exitMenu();
+        };
+    }
+
+    // Or use the exit wheel...
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        __exitMenu();
+    };
+};
+
+/**
+ * Builds the note duration pie menu and its sub-wheel options.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {number} noteValue Currently selected duration value
+ * @returns {void}
+ */
+const piemenuNoteValue = (block, noteValue) => {
+    // input form and  wheelNav pie menu for note value selection
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    showWheelDiv();
+
+    // We want powers of two on the bottom, nearest the input box
+    // as it is most common.
+    const WHEELVALUES = [3, 2, 7, 5];
+    let subWheelValues = {
+        2: [1, 2, 4, 8, 16, 32],
+        3: [1, 3, 6, 9, 12, 27],
+        5: [1, 5, 10, 15, 20, 25],
+        7: [1, 7, 14, 21, 28, 35]
+    };
+
+    let cblk = block.connections[0];
+    if (cblk !== null) {
+        cblk = block.blocks.blockList[cblk].connections[0];
+        if (
+            cblk !== null &&
+            ["neighbor", "neighbor2"].includes(block.blocks.blockList[cblk].name)
+        ) {
+            subWheelValues = {
+                2: [8, 16, 32, 64],
+                3: [9, 12, 27, 54],
+                5: [10, 15, 20, 25],
+                7: [14, 21, 28, 35]
+            };
+        }
+    }
+
+    // the noteValue selector
+    const wheelSize = getPieMenuSize(block);
+    block._noteValueWheel = new wheelnav("wheelDiv", null, wheelSize, wheelSize);
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._noteValueWheel.raphael);
+    // submenu wheel
+    block._tabsWheel = new wheelnav("_tabsWheel", block._noteValueWheel.raphael);
+
+    const noteValueLabels = [];
+    for (let i = 0; i < WHEELVALUES.length; i++) {
+        noteValueLabels.push(WHEELVALUES[i].toString());
+    }
+
+    wheelnav.cssMode = true;
+
+    block._noteValueWheel.keynavigateEnabled = true;
+
+    block._noteValueWheel.colors = platformColor.noteValueWheelcolors;
+    block._noteValueWheel.slicePathFunction = slicePath().DonutSlice;
+    block._noteValueWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._noteValueWheel.slicePathCustom.minRadiusPercent = 0.2;
+    block._noteValueWheel.slicePathCustom.maxRadiusPercent = 0.6;
+    block._noteValueWheel.sliceSelectedPathCustom = block._noteValueWheel.slicePathCustom;
+    block._noteValueWheel.sliceInitPathCustom = block._noteValueWheel.slicePathCustom;
+    block._noteValueWheel.animatetime = 0; // 300;
+    block._noteValueWheel.clickModeRotate = false;
+    block._noteValueWheel.createWheel(noteValueLabels);
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const tabsLabels = [];
+    for (let i = 0; i < WHEELVALUES.length; i++) {
+        for (let j = 0; j < subWheelValues[WHEELVALUES[i]].length; j++) {
+            tabsLabels.push(subWheelValues[WHEELVALUES[i]][j].toString());
+        }
+    }
+
+    block._tabsWheel.colors = platformColor.tabsWheelcolors;
+    block._tabsWheel.slicePathFunction = slicePath().DonutSlice;
+    block._tabsWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._tabsWheel.slicePathCustom.minRadiusPercent = 0.6;
+    block._tabsWheel.slicePathCustom.maxRadiusPercent = 0.8;
+    block._tabsWheel.sliceSelectedPathCustom = block._tabsWheel.slicePathCustom;
+    block._tabsWheel.sliceInitPathCustom = block._tabsWheel.slicePathCustom;
+    block._tabsWheel.clickModeRotate = false;
+    block._tabsWheel.navAngle =
+        -180 / WHEELVALUES.length +
+        180 / (WHEELVALUES.length * subWheelValues[WHEELVALUES[0]].length);
+    block._tabsWheel.createWheel(tabsLabels);
+
+    const that = block;
+
+    /*
+     * set value to number of text
+     * @return{void}
+     * @private
+     */
+    const __selectionChanged = () => {
+        const newText = that._tabsWheel.navItems[that._tabsWheel.selectedNavItemIndex].title;
+        that.value = Number(newText);
+        that.text.text = newText;
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    /*
+     * set pie menu's exit time to current time
+     * @return{void}
+     * @public
+     */
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        that._noteValueWheel.removeWheel();
+        that._exitWheel.removeWheel();
+        if (that.label) {
+            that.label.style.display = "none";
+        }
+        if (docById("labelDiv") && docById("labelDiv").classList) {
+            docById("labelDiv").classList.remove("hasKeyboard");
+        }
+        if (that._check_meter_block !== null) {
+            that.blocks.meter_block_changed(that._check_meter_block);
+        }
+    };
+
+    const labelElem = docById("labelDiv");
+    labelElem.replaceChildren(createNumberLabelInput(noteValue));
+    labelElem.classList.add("hasKeyboard");
+    block.label = docById("numberLabel");
+
+    block.label.addEventListener(
+        "keypress",
+        block._boundExitKeyPressed || block._exitKeyPressed.bind(block)
+    );
+
+    block.label.addEventListener("change", () => {
+        that._labelChanged(false, false);
+    });
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const selectorWidth = 150;
+    const left = Math.round(
+        (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+    );
+    const top = Math.round(
+        (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+    );
+    block.label.style.left = left + "px";
+    block.label.style.top = top + "px";
+
+    const bounds = getWheelSafeBounds(block);
+    let desiredTop;
+    if (top - 300 < bounds.safeTop) {
+        desiredTop = top + 40;
+    } else {
+        desiredTop = top - 300;
+    }
+    const desiredLeft = left - (300 - selectorWidth) / 2;
+
+    positionWheelDiv(block, 300, desiredLeft, desiredTop, bounds);
+
+    block.label.style.width =
+        (Math.round(selectorWidth * block.blocks.blockScale) * block.protoblock.scale) / 2 + "px";
+
+    const __showHide = () => {
+        // const i = that._noteValueWheel.selectedNavItemIndex;
+        for (let k = 0; k < WHEELVALUES.length; k++) {
+            for (let j = 0; j < subWheelValues[WHEELVALUES[0]].length; j++) {
+                const n = k * subWheelValues[WHEELVALUES[0]].length;
+                if (that._noteValueWheel.selectedNavItemIndex === k) {
+                    that._tabsWheel.navItems[n + j].navItem.show();
+                } else {
+                    that._tabsWheel.navItems[n + j].navItem.hide();
+                }
+            }
+        }
+    };
+
+    for (let i = 0; i < noteValueLabels.length; i++) {
+        block._noteValueWheel.navItems[i].navigateFunction = __showHide;
+    }
+
+    // Navigate to the current noteValue value.
+    // Special case 1 to use power of 2.
+    if (noteValue === 1) {
+        block._noteValueWheel.navigateWheel(1);
+        block._tabsWheel.navigateWheel(0);
+    } else {
+        let i;
+        for (i = 0; i < WHEELVALUES.length; i++) {
+            let j;
+            for (j = 0; j < subWheelValues[WHEELVALUES[i]].length; j++) {
+                if (subWheelValues[WHEELVALUES[i]][j] === noteValue) {
+                    block._noteValueWheel.navigateWheel(i);
+                    block._tabsWheel.navigateWheel(i * subWheelValues[WHEELVALUES[i]].length + j);
+                    break;
+                }
+            }
+
+            if (j < subWheelValues[WHEELVALUES[i]].length) {
+                break;
+            }
+        }
+
+        if (i === WHEELVALUES.length) {
+            block._noteValueWheel.navigateWheel(1);
+            block._tabsWheel.navigateWheel(2);
+        }
+    }
+
+    block.label.style.fontSize =
+        Math.round((20 * block.blocks.blockScale * block.protoblock.scale) / 2) + "px";
+    block.label.style.display = "";
+    block.label.focus();
+
+    // Hide the widget when the selection is made.
+    for (let i = 0; i < tabsLabels.length; i++) {
+        block._tabsWheel.navItems[i].navigateFunction = () => {
+            __selectionChanged();
+            __exitMenu();
+        };
+    }
+
+    // Or use the exit wheel...
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        __exitMenu();
+    };
+};
+
+/**
+ * Builds the numeric value pie menu and synchronizes the selected value.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {number[]} wheelValues Values to show on the wheel
+ * @param {number} selectedValue Currently selected value
+ * @returns {void}
+ */
+const piemenuNumber = (block, wheelValues, selectedValue) => {
+    // input form and  wheelNav pie menu for number selection
+    if (block.blocks.stageClick) {
+        return;
+    }
+    showWheelDiv();
+    // the number selector
+    const wheelSize = getPieMenuSize(block);
+    block._numberWheel = new wheelnav("wheelDiv", null, wheelSize, wheelSize);
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._numberWheel.raphael);
+    const wheelLabels = [];
+    for (let i = 0; i < wheelValues.length; i++) {
+        wheelLabels.push(wheelValues[i].toString());
+    }
+    // spacer
+    wheelLabels.push(null);
+
+    wheelnav.cssMode = true;
+
+    block._numberWheel.keynavigateEnabled = true;
+
+    let minRadius, maxRadius;
+    if (wheelValues.length > 16) {
+        minRadius = 0.6;
+        maxRadius = 1.0;
+    } else if (wheelValues.length > 10) {
+        minRadius = 0.5;
+        maxRadius = 0.9;
+    } else {
+        minRadius = 0.2;
+        maxRadius = 0.6;
+    }
+    configureWheel(block._numberWheel, {
+        colors: platformColor.numberWheelcolors,
+        minRadius,
+        maxRadius,
+        selectionPaths: true,
+        animatetime: 0
+    });
+    if (
+        block.blocks.blockList[block.connections[0]].name === "setbpm3" ||
+        block.blocks.blockList[block.connections[0]].name === "setmasterbpm2"
+    ) {
+        block._numberWheel.titleRotateAngle = 0;
+        if (selectedValue === 90) {
+            selectedValue = 90;
+        } else if (selectedValue < 40) {
+            selectedValue = 40;
+        } else if (selectedValue < 60) {
+            selectedValue = Math.floor(block.value / 2) * 2;
+        } else if (selectedValue < 72) {
+            selectedValue = Math.floor(block.value / 3) * 3;
+        } else if (selectedValue < 120) {
+            selectedValue = Math.floor(block.value / 4) * 4;
+        } else if (selectedValue < 144) {
+            selectedValue = Math.floor(block.value / 6) * 6;
+        } else if (selectedValue < 208) {
+            selectedValue = Math.floor(block.value / 8) * 8;
+        } else {
+            selectedValue = 208;
+        }
+    } else if (block.blocks.blockList[block.connections[0]].name === "setheading") {
+        // Set 0 (north) to the top of the wheel.
+        block._numberWheel.navAngle = -90;
+    }
+
+    block._numberWheel.createWheel(wheelLabels);
+
+    if (block._numberWheel.navItems.length > 20) {
+        for (let i = 0; i < block._numberWheel.navItems.length; i++) {
+            block._numberWheel.navItems[i].titleAttr.font = "30 30px sans-serif";
+            block._numberWheel.navItems[i].titleSelectedAttr.font = "30 30px sans-serif";
+        }
+    }
+
+    block._exitWheel.colors = platformColor.exitWheelcolors2;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", "-", "+"]);
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[2].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[2].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[2].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[2].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    const __selectionChanged = () => {
+        that.value = wheelValues[that._numberWheel.selectedNavItemIndex];
+        that.text.text = wheelLabels[that._numberWheel.selectedNavItemIndex];
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        that._numberWheel.removeWheel();
+        that._exitWheel.removeWheel();
+        if (that.label) {
+            that.label.style.display = "none";
+        }
+        if (docById("labelDiv") && docById("labelDiv").classList) {
+            docById("labelDiv").classList.remove("hasKeyboard");
+        }
+
+        if (that._check_meter_block !== null) {
+            that.blocks.meter_block_changed(that._check_meter_block);
+        }
+    };
+
+    const labelElem = docById("labelDiv");
+    if (labelElem && typeof labelElem.replaceChildren === "function") {
+        labelElem.replaceChildren(createNumberLabelInput(selectedValue));
+    }
+    if (labelElem && labelElem.classList) {
+        labelElem.classList.add("hasKeyboard");
+    }
+    block.label = docById("numberLabel");
+
+    block.label.addEventListener(
+        "keypress",
+        block._boundExitKeyPressed || block._exitKeyPressed.bind(block)
+    );
+
+    block.label.addEventListener("change", () => {
+        that._labelChanged(false, false);
+    });
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const selectorWidth = 150;
+    const left = Math.round(
+        (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+    );
+    const top = Math.round(
+        (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+    );
+    block.label.style.left = left + "px";
+    block.label.style.top = top + "px";
+
+    const bounds = getWheelSafeBounds(block);
+    let desiredTop;
+    if (top - 300 < bounds.safeTop) {
+        desiredTop = top + 40;
+    } else {
+        desiredTop = top - 300;
+    }
+    const desiredLeft = left - (300 - selectorWidth) / 2;
+    positionWheelDiv(block, 300, desiredLeft, desiredTop, bounds);
+
+    block.label.style.width =
+        (Math.round(selectorWidth * block.blocks.blockScale) * block.protoblock.scale) / 2 + "px";
+    // Navigate to the current number value.
+    let i = wheelValues.indexOf(selectedValue);
+    if (i === -1) {
+        // Find the closest valid value from the wheelValues array
+        let closest = wheelValues[0];
+        let minDiff = Math.abs(selectedValue - closest);
+        for (let j = 1; j < wheelValues.length; j++) {
+            const diff = Math.abs(selectedValue - wheelValues[j]);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closest = wheelValues[j];
+            }
+        }
+        selectedValue = closest;
+        i = wheelValues.indexOf(selectedValue);
+    }
+    if (i !== -1) {
+        block._numberWheel.navigateWheel(i);
+    }
+    block.label.style.fontSize =
+        Math.round((20 * block.blocks.blockScale * block.protoblock.scale) / 2) + "px";
+
+    block.label.style.display = "";
+    if (block.label && typeof block.label.focus === "function") {
+        block.label.focus();
+    }
+    // Hide the widget when the selection is made.
+    for (let i = 0; i < wheelLabels.length; i++) {
+        block._numberWheel.navItems[i].navigateFunction = () => {
+            __selectionChanged();
+            __exitMenu();
+        };
+    }
+    // Or use the exit wheel...
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        __exitMenu();
+    };
+    block._exitWheel.navItems[1].navigateFunction = () => {
+        const index = wheelValues.indexOf(that.value);
+        if (index === -1) return;
+        const isAscending = wheelValues[0] < wheelValues[wheelValues.length - 1];
+
+        if (isAscending) {
+            if (index > 0) {
+                that.value = wheelValues[index - 1];
+            }
+        } else {
+            if (index < wheelValues.length - 1) {
+                that.value = wheelValues[index + 1];
+            }
+        }
+
+        that.text.text = that.value.toString();
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+        that.label.value = that.value;
+
+        const newIndex = wheelValues.indexOf(that.value);
+        const navFunc = that._numberWheel.navItems[newIndex].navigateFunction;
+        that._numberWheel.navItems[newIndex].navigateFunction = null;
+        that._numberWheel.navigateWheel(newIndex);
+        that._numberWheel.navItems[newIndex].navigateFunction = navFunc;
+    };
+
+    block._exitWheel.navItems[2].navigateFunction = () => {
+        const index = wheelValues.indexOf(that.value);
+        if (index === -1) return;
+
+        const isAscending = wheelValues[0] < wheelValues[wheelValues.length - 1];
+
+        if (isAscending) {
+            if (index < wheelValues.length - 1) {
+                that.value = wheelValues[index + 1];
+            }
+        } else {
+            if (index > 0) {
+                that.value = wheelValues[index - 1];
+            }
+        }
+
+        that.text.text = that.value.toString();
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+        that.label.value = that.value;
+
+        const newIndex = wheelValues.indexOf(that.value);
+        const navFunc = that._numberWheel.navItems[newIndex].navigateFunction;
+        that._numberWheel.navItems[newIndex].navigateFunction = null;
+        that._numberWheel.navigateWheel(newIndex);
+        that._numberWheel.navItems[newIndex].navigateFunction = navFunc;
+    };
+
+    const __pitchPreviewForNum = () => {
+        const label = that._numberWheel.navItems[that._numberWheel.selectedNavItemIndex].title;
+        const i = wheelLabels.indexOf(label);
+        const actualPitch = numberToPitch(wheelValues[i] + 3);
+        const tur = that.activity.turtles.ithTurtle(0);
+        if (!tur.singer.instrumentNames.includes(DEFAULTVOICE)) {
+            that.activity.logo.synth.createDefaultSynth(0);
+            that.activity.logo.synth.loadSynth(0, DEFAULTVOICE);
+        }
+        that.activity.logo.synth.setMasterVolume(PREVIEWVOLUME);
+        that.activity.logo.synth.setVolume(0, DEFAULTVOICE, PREVIEWVOLUME);
+        actualPitch[0] = actualPitch[0].replace(SHARP, "#").replace(FLAT, "b");
+        if (!that._triggerLock) {
+            that._triggerLock = true;
+            that.activity.logo.synth.trigger(
+                0,
+                actualPitch[0] + (actualPitch[1] + 3),
+                1 / 8,
+                DEFAULTVOICE,
+                null,
+                null
+            );
+        }
+        setTimeout(() => {
+            that._triggerLock = false;
+        }, 125); // 1/8 second in milliseconds
+
+        __selectionChanged();
+    };
+
+    const __hertzPreview = () => {
+        const label = that._numberWheel.navItems[that._numberWheel.selectedNavItemIndex].title;
+        const i = wheelLabels.indexOf(label);
+        const actualPitch = frequencyToPitch(wheelValues[i]);
+        const tur = that.activity.turtles.ithTurtle(0);
+        if (!tur.singer.instrumentNames.includes(DEFAULTVOICE)) {
+            if (that.activity?.logo?.synth?.createDefaultSynth) {
+                that.activity.logo.synth.createDefaultSynth(0);
+            }
+            if (that.activity?.logo?.synth?.loadSynth) {
+                that.activity.logo.synth.loadSynth(0, DEFAULTVOICE);
+            }
+        }
+        if (that.activity?.logo?.synth) {
+            that.activity.logo.synth.setMasterVolume(PREVIEWVOLUME);
+            that.activity.logo.synth.setVolume(0, DEFAULTVOICE, PREVIEWVOLUME);
+        }
+        actualPitch[0] = actualPitch[0].replace(SHARP, "#").replace(FLAT, "b");
+        if (!that._triggerLock && that.activity?.logo?.synth?.trigger) {
+            that._triggerLock = true;
+            that.activity.logo.synth.trigger(
+                0,
+                actualPitch[0] + actualPitch[1],
+                1 / 8,
+                DEFAULTVOICE,
+                null,
+                null
+            );
+        }
+        setTimeout(() => {
+            that._triggerLock = false;
+        }, 125); // 1/8 second in milliseconds
+        __selectionChanged();
+    };
+    // Handler for pitchnumber preview. Block is to ensure that
+    // only pitchnumber block's pie menu gets a sound preview
+    if (
+        typeof block._usePieNumberC1 === "function" &&
+        block._usePieNumberC1() &&
+        block.blocks &&
+        block.blocks.blockList &&
+        block.blocks.blockList[block.connections[0]] &&
+        block.blocks.blockList[block.connections[0]].name === "pitchnumber"
+    ) {
+        for (let i = 0; i < wheelValues.length; i++) {
+            block._numberWheel.navItems[i].navigateFunction = __pitchPreviewForNum;
+        }
+    }
+    // Handler for Hertz preview. Need to also ensure that
+    // only hertz block gets a different sound preview
+    if (
+        typeof block._usePieNumberC1 === "function" &&
+        block._usePieNumberC1() &&
+        block.blocks &&
+        block.blocks.blockList &&
+        block.blocks.blockList[block.connections[0]] &&
+        block.blocks.blockList[block.connections[0]].name === "hertz"
+    ) {
+        for (let i = 0; i < wheelValues.length; i++) {
+            block._numberWheel.navItems[i].navigateFunction = __hertzPreview;
+        }
+    }
+};
+
+/**
+ * Creates the numeric input used by pie menus without relying on HTML injection.
+ * @param {number|string} value
+ * @returns {HTMLInputElement}
+ */
+const createNumberLabelInput = value => {
+    const input = document.createElement("input");
+    input.id = "numberLabel";
+    input.style.position = "absolute";
+    input.style.webkitUserSelect = "text";
+    input.style.MozUserSelect = "text";
+    input.style.msUserSelect = "text";
+    input.className = "number";
+    input.type = "number";
+    input.value = value;
+    return input;
+};
+
+/**
+ * Builds the color-selection pie menu for turtle and paint blocks.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {number[]} wheelValues Numeric values mapped to colors
+ * @param {number} selectedValue Currently selected value
+ * @param {string} mode Color mode (e.g. setcolor, setturtlecolor, sethue)
+ * @returns {void}
+ */
+const piemenuColor = (block, wheelValues, selectedValue, mode) => {
+    // input form and  wheelNav pie menu for setcolor selection
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    showWheelDiv();
+
+    // the number selector
+    const wheelSize = getPieMenuSize(block);
+    block._numberWheel = new wheelnav("wheelDiv", null, wheelSize, wheelSize);
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._numberWheel.raphael);
+
+    const wheelLabels = [];
+    for (let i = 0; i < wheelValues.length; i++) {
+        wheelLabels.push(wheelValues[i].toString());
+    }
+
+    wheelnav.cssMode = true;
+
+    block._numberWheel.keynavigateEnabled = true;
+
+    block._numberWheel.colors = [];
+    if (mode === "setcolor" || mode === "setturtlecolor") {
+        for (let i = 0; i < wheelValues.length; i++) {
+            block._numberWheel.colors.push(COLORS40[Math.floor(wheelValues[i] / 2.5)][2]);
+        }
+    } else if (mode === "sethue") {
+        for (let i = 0; i < wheelValues.length; i++) {
+            block._numberWheel.colors.push(getMunsellColor(wheelValues[i], 50, 50));
+        }
+    } else {
+        if (mode === "setshade") {
+            for (let i = 0; i < wheelValues.length; i++) {
+                block._numberWheel.colors.push(getMunsellColor(0, wheelValues[i], 0));
+            }
+        } else if (mode === "settranslucency") {
+            for (let i = 0; i < wheelValues.length; i++) {
+                block._numberWheel.colors.push(getMunsellColor(35, 70, 100 - wheelValues[i]));
+            }
+        } else {
+            for (let i = 0; i < wheelValues.length; i++) {
+                block._numberWheel.colors.push(getMunsellColor(60, 60, wheelValues[i]));
+            }
+        }
+
+        for (let i = 0; i < wheelValues.length; i++) {
+            wheelLabels.push(null);
+        }
+    }
+
+    block._numberWheel.slicePathFunction = slicePath().DonutSlice;
+    block._numberWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._numberWheel.slicePathCustom.minRadiusPercent = 0.6;
+    block._numberWheel.slicePathCustom.maxRadiusPercent = 1.0;
+
+    block._numberWheel.sliceSelectedPathCustom = block._numberWheel.slicePathCustom;
+    block._numberWheel.sliceInitPathCustom = block._numberWheel.slicePathCustom;
+    // block._numberWheel.titleRotateAngle = 0;
+    block._numberWheel.animatetime = 0; // 300;
+    block._numberWheel.createWheel(wheelLabels);
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    const __selectionChanged = () => {
+        that.value = wheelValues[that._numberWheel.selectedNavItemIndex];
+        that.text.text = wheelLabels[that._numberWheel.selectedNavItemIndex];
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        that._numberWheel.removeWheel();
+        that._exitWheel.removeWheel();
+        if (that.label) {
+            that.label.style.display = "none";
+        }
+        if (docById("labelDiv") && docById("labelDiv").classList) {
+            docById("labelDiv").classList.remove("hasKeyboard");
+        }
+    };
+
+    const labelElem = docById("labelDiv");
+    if (labelElem && typeof labelElem.replaceChildren === "function") {
+        labelElem.replaceChildren(createNumberLabelInput(selectedValue));
+    }
+    if (labelElem && labelElem.classList) {
+        labelElem.classList.add("hasKeyboard");
+    }
+    block.label = docById("numberLabel");
+
+    block.label.addEventListener(
+        "keypress",
+        block._boundExitKeyPressed || block._exitKeyPressed.bind(block)
+    );
+
+    block.label.addEventListener("change", () => {
+        that._labelChanged(false, false);
+    });
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const selectorWidth = 150;
+    const left = Math.round(
+        (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+    );
+    const top = Math.round(
+        (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+    );
+    block.label.style.left = left + "px";
+    block.label.style.top = top + "px";
+
+    const bounds = getWheelSafeBounds(block);
+    let desiredTop;
+    if (top - 300 < bounds.safeTop) {
+        desiredTop = top + 40;
+    } else {
+        desiredTop = top - 300;
+    }
+    const desiredLeft = left - (300 - selectorWidth) / 2;
+    positionWheelDiv(block, 300, desiredLeft, desiredTop, bounds);
+
+    block.label.style.width =
+        (Math.round(selectorWidth * block.blocks.blockScale) * block.protoblock.scale) / 2 + "px";
+
+    // Navigate to the current number value.
+    let i = wheelValues.indexOf(selectedValue);
+    if (i === -1) {
+        i = 0;
+    }
+
+    block._numberWheel.navigateWheel(i);
+    // docById('wheelDiv').style.display = '';
+
+    block.label.style.fontSize =
+        Math.round((20 * block.blocks.blockScale * block.protoblock.scale) / 2) + "px";
+    block.label.style.display = "";
+    if (block.label && typeof block.label.focus === "function") {
+        block.label.focus();
+    }
+
+    // Hide the widget when the selection is made.
+    for (let i = 0; i < wheelLabels.length; i++) {
+        block._numberWheel.navItems[i].navigateFunction = () => {
+            __selectionChanged();
+            __exitMenu();
+        };
+    }
+
+    // Or use the exit wheel...
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        __exitMenu();
+    };
+};
+
+/**
+ * Calculates a proportional font size for basic / temperament pie menu slices
+ * to fit labels comfortably within slice arcs without clipping.
+ *
+ * @param {number} wheelRadius - The radius of the wheel in coordinate units.
+ * @param {number} sliceCount - The number of slices in the wheel.
+ * @param {number} labelLen - The character length of the label.
+ * @returns {string} Font CSS specification string.
+ */
+const getTemperamentSliceFont = (wheelRadius, sliceCount, labelLen) => {
+    const arcPx = (2 * Math.PI * 0.62 * wheelRadius) / Math.max(sliceCount, 1);
+    const size = Math.floor((arcPx * 1.15) / Math.max(labelLen * 0.42, 1));
+    const minSize = Math.round(0.062 * wheelRadius);
+    const maxSize = Math.round(0.1 * wheelRadius);
+    const clamped = Math.min(maxSize, Math.max(minSize, size));
+    return `bold ${clamped}px sans-serif`;
+};
+
+/**
+ * Builds a generic pie menu with arbitrary labels and values.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {Array} menuLabels Labels rendered on the wheel
+ * @param {Array} menuValues Values corresponding to each label
+ * @param {*} selectedValue Currently selected value
+ * @param {Array} [colors] Optional override colors for the wheel
+ * @returns {void}
+ */
+const piemenuBasic = (block, menuLabels, menuValues, selectedValue, colors) => {
+    // basic wheelNav pie menu
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    if (colors === undefined) {
+        colors = platformColor.piemenuBasicundefined;
+    }
+
+    showWheelDiv();
+
+    // reference to diameter of the basic wheel
+    let size = 800;
+    if (block.name === "outputtools" || block.name === "grid") {
+        // slightly larger menu
+        size = 1000;
+    } else if (block.name === "temperamentname") {
+        // slightly larger wheel size for the Temperament Menu
+        size = 1200;
+    }
+
+    // the selectedValueh selector
+    block._basicWheel = new wheelnav("wheelDiv", null, size, size);
+    block._exitWheel = new wheelnav("_exitWheel", block._basicWheel.raphael);
+
+    const labels = [];
+    for (let i = 0; i < menuLabels.length; i++) {
+        labels.push(menuLabels[i]);
+    }
+
+    wheelnav.cssMode = true;
+
+    block._basicWheel.keynavigateEnabled = true;
+
+    block._basicWheel.colors = colors;
+    block._basicWheel.slicePathFunction = slicePath().DonutSlice;
+    block._basicWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._basicWheel.slicePathCustom.minRadiusPercent = 0.2;
+    block._basicWheel.slicePathCustom.maxRadiusPercent = 1.0;
+    block._basicWheel.sliceSelectedPathCustom = block._basicWheel.slicePathCustom;
+    block._basicWheel.sliceInitPathCustom = block._basicWheel.slicePathCustom;
+    block._basicWheel.animatetime = 0; // 300;
+    if (block.name !== "wrapmode") {
+        block._basicWheel.titleRotateAngle = 0;
+    }
+    block._basicWheel.createWheel(labels);
+
+    if (block.name === "temperamentname" || labels.length >= 6) {
+        for (let j = 0; j < block._basicWheel.navItems.length; j++) {
+            const font = getTemperamentSliceFont(
+                block._basicWheel.wheelRadius,
+                labels.length,
+                labels[j] ? labels[j].length : 1
+            );
+            block._basicWheel.navItems[j].titleAttr.font = font;
+            block._basicWheel.navItems[j].titleHoverAttr.font = font;
+            block._basicWheel.navItems[j].titleSelectedAttr.font = font;
+        }
+    }
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    const __selectionChanged = () => {
+        const label = that._basicWheel.navItems[that._basicWheel.selectedNavItemIndex].title;
+        const i = labels.indexOf(label);
+        if (that.name === "outputtools") {
+            that.overrideName = menuValues[i];
+            that.privateData = menuValues[i];
+            that.text.text = menuLabels[i];
+        } else {
+            that.value = menuValues[i];
+            that.text.text = menuLabels[i];
+        }
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        that._basicWheel.removeWheel();
+    };
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    let displaySize = 300;
+    let bounds = null;
+    if (block.name === "temperamentname") {
+        bounds = getWheelSafeBounds(block);
+        const availableW = Math.max(160, bounds.rightBound - bounds.safeLeft - 8);
+        const availableH = Math.max(160, bounds.bottomBound - bounds.safeTop - 8);
+        const maxAvailable = Math.min(availableW, availableH);
+        const screenWidth = typeof window !== "undefined" ? window.innerWidth : 1200;
+        if (screenWidth >= 1200) {
+            displaySize = Math.min(410, Math.floor(maxAvailable * 0.7));
+        } else if (screenWidth >= 768) {
+            displaySize = Math.min(360, Math.floor(maxAvailable * 0.7));
+        } else {
+            displaySize = Math.min(310, Math.floor(maxAvailable * 0.8));
+        }
+        displaySize = Math.min(displaySize, maxAvailable);
+        displaySize = Math.max(160, displaySize);
+    } else if (block.name === "outputtools" || block.name === "grid") {
+        displaySize = 400;
+    }
+
+    const half = Math.round(displaySize / 2);
+    const blockCenterX = Math.round(
+        (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+    );
+    const blockCenterY = Math.round(
+        (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+    );
+    const desiredLeft = blockCenterX - half;
+    const desiredTop = blockCenterY - half;
+
+    positionWheelDiv(block, displaySize, desiredLeft, desiredTop, bounds);
+
+    // Navigate to the current selectedValue value.
+    let i = menuValues.indexOf(selectedValue);
+    if (i === -1) {
+        i = 1;
+    }
+
+    block._basicWheel.navigateWheel(i);
+
+    // Hide the widget when the selection is made.
+    for (let i = 0; i < menuLabels.length; i++) {
+        block._basicWheel.navItems[i].navigateFunction = () => {
+            __selectionChanged();
+            __exitMenu();
+        };
+    }
+
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        __exitMenu();
+    };
+};
+
+/**
+ * Builds the boolean selection pie menu.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {string[]} booleanLabels Display labels for each option
+ * @param {boolean[]} booleanValues Values mapped to each label
+ * @param {boolean} boolean Currently selected value
+ * @returns {void}
+ */
+const piemenuBoolean = (block, booleanLabels, booleanValues, boolean) => {
+    // wheelNav pie menu for boolean selection
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    showWheelDiv();
+
+    // the boolean selector
+    const wheelSize = getPieMenuSize(block);
+    block._booleanWheel = new wheelnav("wheelDiv", null, wheelSize, wheelSize);
+    guardSelectedItemHover();
+    if (block._booleanWheel.raphael) {
+        outsideClickPapers.add(block._booleanWheel.raphael);
+    }
+
+    const labels = [];
+    for (let i = 0; i < booleanLabels.length; i++) {
+        labels.push(booleanLabels[i]);
+    }
+
+    wheelnav.cssMode = true;
+
+    block._booleanWheel.keynavigateEnabled = true;
+
+    block._booleanWheel.colors = platformColor.booleanWheelcolors;
+    block._booleanWheel.slicePathFunction = slicePath().DonutSlice;
+    block._booleanWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._booleanWheel.slicePathCustom.minRadiusPercent = 0;
+    block._booleanWheel.slicePathCustom.maxRadiusPercent = 0.6;
+    block._booleanWheel.sliceSelectedPathCustom = block._booleanWheel.slicePathCustom;
+    block._booleanWheel.sliceInitPathCustom = block._booleanWheel.slicePathCustom;
+    // block._booleanWheel.titleRotateAngle = 0;
+    block._booleanWheel.animatetime = 0; // 300;
+    block._booleanWheel.createWheel(labels);
+
+    const that = block;
+
+    const __selectionChanged = () => {
+        const label = that._booleanWheel.navItems[that._booleanWheel.selectedNavItemIndex].title;
+        const i = labels.indexOf(label);
+        that.value = booleanValues[i];
+        that.text.text = booleanLabels[i];
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        that._booleanWheel.removeWheel();
+    };
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - 200;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - 200;
+    positionWheelDiv(block, 300, desiredLeft, desiredTop);
+
+    // Navigate to the current boolean value.
+    let i = booleanValues.indexOf(boolean);
+    if (i === -1) {
+        i = 0;
+    }
+
+    block._booleanWheel.navigateWheel(i);
+
+    // Hide the widget when the selection is made.
+    block._booleanWheel.navItems[0].navigateFunction = () => {
+        __selectionChanged();
+        __exitMenu();
+    };
+
+    block._booleanWheel.navItems[1].navigateFunction = () => {
+        __selectionChanged();
+        __exitMenu();
+    };
+};
+
+/**
+ * Builds the chord selection pie menu.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {string} selectedChord Currently selected chord label
+ * @returns {void}
+ */
+const piemenuChords = (block, selectedChord) => {
+    // wheelNav pie menu for chord selection
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    showWheelDiv();
+
+    // the chord selector
+    block._chordWheel = new wheelnav("wheelDiv", null, 1000, 1000);
+    block._exitWheel = new wheelnav("_exitWheel", block._chordWheel.raphael);
+
+    const chordLabels = [];
+    for (let i = 0; i < CHORDNAMES.length; i++) {
+        const name = _(CHORDNAMES[i]);
+        if (name.length === 0) {
+            chordLabels.push(CHORDNAMES[i]); // In case i18n fails
+        } else {
+            chordLabels.push(name);
+        }
+    }
+    wheelnav.cssMode = true;
+
+    block._chordWheel.keynavigateEnabled = true;
+
+    block._chordWheel.colors = platformColor.modeWheelcolors;
+    block._chordWheel.slicePathFunction = slicePath().DonutSlice;
+    block._chordWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._chordWheel.slicePathCustom.minRadiusPercent = 0.2;
+    block._chordWheel.slicePathCustom.maxRadiusPercent = 1.0;
+    block._chordWheel.sliceSelectedPathCustom = block._chordWheel.slicePathCustom;
+    block._chordWheel.sliceInitPathCustom = block._chordWheel.slicePathCustom;
+    block._chordWheel.titleRotateAngle = 0;
+    block._chordWheel.animatetime = 0;
+    block._chordWheel.createWheel(chordLabels);
+
+    for (let i = 0; i < block._chordWheel.navItems.length; i++) {
+        block._chordWheel.navItems[i].titleAttr.font = "32 32px sans-serif";
+        block._chordWheel.navItems[i].titleSelectedAttr.font = "32 32px sans-serif";
+    }
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    const __selectionChanged = () => {
+        that.value = CHORDNAMES[that._chordWheel.selectedNavItemIndex];
+        that.text.text = that._chordWheel.navItems[that._chordWheel.selectedNavItemIndex].title;
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        that._chordWheel.removeWheel();
+    };
+
+    // Position the widget over the note block.
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - 200;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - 200;
+
+    positionWheelDiv(block, 400, desiredLeft, desiredTop);
+
+    // Navigate to the current chord value.
+    let i = chordLabels.indexOf(selectedChord);
+    if (i === -1) {
+        i = 0;
+    }
+
+    block._chordWheel.navigateWheel(i);
+
+    // Enable scroll-to-rotate
+    enableWheelScroll(block._chordWheel, chordLabels.length);
+
+    // Hide the widget when the selection is made.
+    for (let i = 0; i < chordLabels.length; i++) {
+        block._chordWheel.navItems[i].navigateFunction = () => {
+            __selectionChanged();
+            __exitMenu();
+        };
+    }
+
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        __exitMenu();
+    };
+};
+
+/**
+ * Builds the voice/instrument selection pie menu.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {string[]} voiceLabels Labels shown in the wheel
+ * @param {Array} voiceValues Values mapped to labels
+ * @param {number[]} categories Category indices for color grouping
+ * @param {*} voice Currently selected voice value
+ * @param {number} [rotate] Optional title rotation angle
+ * @returns {void}
+ */
+const piemenuVoices = (block, voiceLabels, voiceValues, categories, voice, rotate) => {
+    // wheelNav pie menu for voice selection
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    const COLORS = platformColor.piemenuVoicesColors;
+    const colors = [];
+
+    for (let i = 0; i < voiceLabels.length; i++) {
+        colors.push(COLORS[categories[i] % COLORS.length]);
+    }
+
+    showWheelDiv();
+
+    // the voice selector
+    if (localStorage.kanaPreference === "kana") {
+        block._voiceWheel = new wheelnav("wheelDiv", null, 1200, 1200);
+    } else {
+        block._voiceWheel = new wheelnav("wheelDiv", null, 800, 800);
+    }
+
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._voiceWheel.raphael);
+
+    wheelnav.cssMode = true;
+
+    block._voiceWheel.keynavigateEnabled = true;
+
+    block._voiceWheel.colors = colors;
+    block._voiceWheel.slicePathFunction = slicePath().DonutSlice;
+    block._voiceWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._voiceWheel.slicePathCustom.minRadiusPercent = 0.2;
+    block._voiceWheel.slicePathCustom.maxRadiusPercent = 1;
+    block._voiceWheel.sliceSelectedPathCustom = block._voiceWheel.slicePathCustom;
+    block._voiceWheel.sliceInitPathCustom = block._voiceWheel.slicePathCustom;
+    if (rotate === undefined) {
+        block._voiceWheel.titleRotateAngle = 0;
+    } else {
+        block._voiceWheel.titleRotateAngle = rotate;
+    }
+
+    block._voiceWheel.animatetime = 0; // 300;
+    block._voiceWheel.createWheel(voiceLabels);
+
+    // Special case for Japanese
+    // const language = localStorage.languagePreference;
+    // if (language === 'ja') {
+    for (let i = 0; i < block._voiceWheel.navItems.length; i++) {
+        block._voiceWheel.navItems[i].titleAttr.font = "30 30px sans-serif";
+        block._voiceWheel.navItems[i].titleSelectedAttr.font = "30 30px sans-serif";
+    }
+    // }
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    const __selectionChanged = () => {
+        const label = that._voiceWheel.navItems[that._voiceWheel.selectedNavItemIndex].title;
+        const i = voiceLabels.indexOf(label);
+        that.value = voiceValues[i];
+        that.text.text = label;
+
+        if (getDrumName(that.value) === null) {
+            that.activity.logo.synth.loadSynth(0, getVoiceSynthName(that.value));
+        } else {
+            that.activity.logo.synth.loadSynth(0, getDrumSynthName(that.value));
+        }
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+    };
+
+    // A preview of an unloaded voice is deferred to give the synth time to
+    // load. Held here so the exit handler can cancel one that is still pending.
+    let voicePreviewTimeout = null;
+
+    /*
+     * Preview voice
+     * @return{void}
+     * @private
+     */
+    const __voicePreview = () => {
+        const label = that._voiceWheel.navItems[that._voiceWheel.selectedNavItemIndex].title;
+        const i = voiceLabels.indexOf(label);
+        const voice = voiceValues[i];
+        let timeout = 0;
+
+        const tur = that.activity.turtles.ithTurtle(0);
+
+        if (!tur.singer.instrumentNames.includes(voice)) {
+            tur.singer.instrumentNames.push(voice);
+            if (voice === DEFAULTVOICE) {
+                that.activity.logo.synth.createDefaultSynth(0);
+            }
+
+            that.activity.logo.synth.loadSynth(0, voice);
+            // give the synth time to load
+            timeout = 500;
+        }
+
+        clearTimeout(voicePreviewTimeout);
+        voicePreviewTimeout = setTimeout(() => {
+            voicePreviewTimeout = null;
+            Singer.setSynthVolume(that.activity.logo, 0, voice, DEFAULTVOLUME);
+            that.activity.logo.synth.trigger(0, "G4", 1 / 4, voice, null, null, false);
+            that.activity.logo.synth.start();
+        }, timeout);
+
+        __selectionChanged();
+    };
+
+    // position widget
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - 200;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - 200;
+
+    positionWheelDiv(block, 400, desiredLeft, desiredTop);
+
+    // navigate to a specific starting point
+    let i = voiceValues.indexOf(voice);
+    if (i === -1) {
+        i = 0;
+    }
+
+    block._voiceWheel.navigateWheel(i);
+
+    // Enable scroll-to-rotate
+    enableWheelScroll(block._voiceWheel, voiceLabels.length);
+
+    // Set up handlers for voice preview.
+    for (let i = 0; i < voiceValues.length; i++) {
+        block._voiceWheel.navItems[i].navigateFunction = __voicePreview;
+    }
+
+    // Hide the widget when the exit button is clicked.
+    block._exitWheel.navItems[0].navigateFunction = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        // A preview scheduled just before the menu closed would otherwise play
+        // into a dismissed menu.
+        clearTimeout(voicePreviewTimeout);
+        voicePreviewTimeout = null;
+        // Remove the wheels so wheelnav detaches the window keydown listener it
+        // installs for keynavigateEnabled. Without this the closed menu keeps
+        // responding to the arrow keys.
+        that._voiceWheel.removeWheel();
+        that._exitWheel.removeWheel();
+        // The pie menu covers the canvas, so the block never receives the
+        // mouseout that would normally clear this. Left set, the arrow keys
+        // move the block instead of doing nothing.
+        that.blocks.activeBlock = null;
+    };
+};
+
+/**
+ * Builds the interval selection pie menu.
+ * @param {Object} block Block instance invoking the menu
+ * @param {string} selectedInterval Currently selected interval value
+ * @returns {void}
+ */
+const piemenuIntervals = (block, selectedInterval) => {
+    // pie menu for interval selection
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    showWheelDiv();
+
+    // Use advanced constructor for more wheelnav on same div
+    const language = localStorage.languagePreference;
+    if (language === "ja") {
+        block._intervalNameWheel = new wheelnav("wheelDiv", null, 1500, 1500);
+    } else {
+        block._intervalNameWheel = new wheelnav("wheelDiv", null, 800, 800);
+    }
+
+    block._intervalWheel = new wheelnav("block._intervalWheel", block._intervalNameWheel.raphael);
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._intervalNameWheel.raphael);
+
+    wheelnav.cssMode = true;
+
+    block._intervalNameWheel.keynavigateEnabled = true;
+
+    //Customize slicePaths for proper size
+    block._intervalNameWheel.colors = platformColor.intervalNameWheelcolors;
+    block._intervalNameWheel.slicePathFunction = slicePath().DonutSlice;
+    block._intervalNameWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._intervalNameWheel.slicePathCustom.minRadiusPercent = 0.2;
+    block._intervalNameWheel.slicePathCustom.maxRadiusPercent = 0.8;
+    block._intervalNameWheel.sliceSelectedPathCustom = block._intervalNameWheel.slicePathCustom;
+    block._intervalNameWheel.sliceInitPathCustom = block._intervalNameWheel.slicePathCustom;
+    block._intervalNameWheel.titleRotateAngle = 0;
+    block._intervalNameWheel.clickModeRotate = false;
+    // block._intervalNameWheel.clickModeRotate = false;
+    const labels = [];
+    for (let i = 0; i < INTERVALS.length; i++) {
+        labels.push(_(INTERVALS[i][1]));
+    }
+
+    block._intervalNameWheel.animatetime = 0; // 300;
+    block._intervalNameWheel.createWheel(labels);
+
+    block._intervalWheel.colors = platformColor.intervalWheelcolors;
+    block._intervalWheel.slicePathFunction = slicePath().DonutSlice;
+    block._intervalWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._intervalWheel.slicePathCustom.minRadiusPercent = 0.8;
+    block._intervalWheel.slicePathCustom.maxRadiusPercent = 1;
+    block._intervalWheel.sliceSelectedPathCustom = block._intervalWheel.slicePathCustom;
+    block._intervalWheel.sliceInitPathCustom = block._intervalWheel.slicePathCustom;
+
+    //Disable rotation, set navAngle and create the menus
+    block._intervalWheel.clickModeRotate = false;
+    // Align each set of numbers with its corresponding interval
+    block._intervalWheel.navAngle = -(180 / labels.length) + 180 / (8 * labels.length);
+    block._intervalWheel.animatetime = 0; // 300;
+
+    const numbers = [];
+    for (let i = 0; i < INTERVALS.length; i++) {
+        for (let j = 1; j < 9; j++) {
+            numbers.push(j.toString());
+        }
+    }
+    block._intervalWheel.createWheel(numbers);
+
+    block._exitWheel.colors = platformColor.exitWheelcolors;
+    block._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    block._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    block._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    block._exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    block._exitWheel.sliceSelectedPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.sliceInitPathCustom = block._exitWheel.slicePathCustom;
+    block._exitWheel.clickModeRotate = false;
+    block._exitWheel.initWheel(["×", " "]);
+    block._exitWheel.navItems[1].enabled = false;
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    // position widget
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - 200;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - 200;
+    positionWheelDiv(block, 400, desiredLeft, desiredTop);
+
+    let isInitialized = false;
+    // Add function to each main menu for show/hide sub menus
+    const __setupAction = (i, activeTabs) => {
+        that._intervalNameWheel.navItems[i].navigateFunction = () => {
+            for (let l = 0; l < labels.length; l++) {
+                for (let j = 0; j < 8; j++) {
+                    if (l !== i || !activeTabs.includes(j + 1)) {
+                        that._intervalWheel.navItems[l * 8 + j].navItem.hide();
+                    } else {
+                        that._intervalWheel.navItems[l * 8 + j].navItem.show();
+                    }
+                }
+            }
+            if (isInitialized && activeTabs.length > 0) {
+                that._intervalWheel.navigateWheel(i * 8 + activeTabs[0] - 1);
+                __selectionChanged();
+            }
+        };
+    };
+
+    // Set up action for interval name so number tabs will
+    // initialize on load.
+    for (let i = 0; i < INTERVALS.length; i++) {
+        __setupAction(i, INTERVALS[i][2]);
+    }
+
+    // navigate to a specific starting point
+    const obj = selectedInterval.split(" ");
+    let i;
+    for (i = 0; i < INTERVALS.length; i++) {
+        if (obj[0] === INTERVALS[i][1]) {
+            break;
+        }
+    }
+
+    if (i === INTERVALS.length) {
+        i = 0;
+    }
+
+    block._intervalNameWheel.navigateWheel(i);
+
+    // Enable scroll-to-rotate
+    enableWheelScroll(block._intervalNameWheel, labels.length);
+
+    const j = Number(obj[1]);
+    if (INTERVALS[i][2].includes(j)) {
+        block._intervalWheel.navigateWheel(i * 8 + j - 1);
+    } else {
+        block._intervalWheel.navigateWheel(i * 8 + INTERVALS[i][2][0] - 1);
+    }
+    isInitialized = true;
+
+    const __exitMenu = () => {
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+    };
+
+    const __selectionChanged = () => {
+        const label =
+            that._intervalNameWheel.navItems[that._intervalNameWheel.selectedNavItemIndex].title;
+        const number = that._intervalWheel.navItems[that._intervalWheel.selectedNavItemIndex].title;
+
+        that.value = INTERVALS[that._intervalNameWheel.selectedNavItemIndex][1] + " " + number;
+        if (!INTERVALVALUES[that.value]) {
+            return;
+        }
+        if (label === "perfect 1") {
+            that.text.text = _("unison");
+        } else {
+            that.text.text = label + " " + number;
+        }
+
+        // Make sure text is on top.
+        that.container.setChildIndex(that.text, that.container.children.length - 1);
+        that.updateCache();
+
+        const obj = getNote("C", 4, INTERVALVALUES[that.value][0], "C major", false, null, null);
+        obj[0] = obj[0].replace(SHARP, "#").replace(FLAT, "b");
+
+        const tur = that.activity.turtles.ithTurtle(0);
+
+        if (!tur.singer.instrumentNames.includes(DEFAULTVOICE)) {
+            that.activity.logo.synth.createDefaultSynth(0);
+            that.activity.logo.synth.loadSynth(0, DEFAULTVOICE);
+        }
+
+        that.activity.logo.synth.setMasterVolume(DEFAULTVOLUME);
+        Singer.setSynthVolume(that.activity.logo, 0, DEFAULTVOICE, DEFAULTVOLUME);
+
+        if (!that._triggerLock) {
+            that._triggerLock = true;
+
+            that.activity.logo.synth.trigger(
+                0,
+                ["C4", obj[0] + obj[1]],
+                1 / 8,
+                DEFAULTVOICE,
+                null,
+                null
+            );
+        }
+
+        setTimeout(() => {
+            that._triggerLock = false;
+        }, 125); // 1/8 second in milliseconds
+    };
+
+    // Set up handlers for preview.
+    for (let i = 0; i < 8 * labels.length; i++) {
+        block._intervalWheel.navItems[i].navigateFunction = __selectionChanged;
+    }
+
+    block._exitWheel.navItems[0].navigateFunction = __exitMenu;
+};
+
+/**
+ * Builds the musical mode selection pie menu.
+ *
+ * @param {Object} block Block instance invoking the menu
+ * @param {string} selectedMode Currently selected mode value
+ * @param {Function} [onSelect] Optional callback invoked with (modeName, label) when a mode is chosen
+ * @returns {void}
+ */
+const piemenuModes = (block, selectedMode, onSelect) => {
+    // pie menu for mode selection
+
+    wheelnav.cssMode = true;
+    let isInitialized = false;
+    let isRebuilding = false;
+
+    if (block.blocks.stageClick) {
+        return;
+    }
+
+    // Look for a key block
+    let key = "C";
+    let modeGroup = "7"; // default mode group
+    let octave = false;
+
+    const c = block.connections[0];
+    if (c !== null) {
+        if (block.blocks.blockList[c].name === "setkey2") {
+            const c1 = block.blocks.blockList[c].connections[1];
+            if (c1 !== null) {
+                if (block.blocks.blockList[c1].name === "notename") {
+                    key = block.blocks.blockList[c1].value;
+                }
+            }
+        }
+    }
+
+    showWheelDiv();
+
+    // Saved custom modes from the mode widget, shown in a dedicated "custom"
+    // pie menu group so they can be selected without opening the editor.
+    const savedCustomModes = getSavedCustomModes();
+
+    //Use advanced constructor for more wheelnav on same div
+    block._modeWheel = new wheelnav("wheelDiv", null, 1200, 1200);
+    block._modeNameWheel = null; // We build block wheel based on the group selection.
+    // exit button
+    block._exitWheel = new wheelnav("_exitWheel", block._modeWheel.raphael);
+
+    const currentEDO = getCurrentEDO(block.activity.logo.synth.inTemperament);
+    const inTemperament = block.activity.logo.synth.inTemperament;
+    const nonEDO = isNonEDO(inTemperament);
+    const modeWheelLabels = Array.from({ length: currentEDO }, (_, i) => String(i));
+
+    configureWheel(block._modeWheel, {
+        colors: platformColor.modeWheelcolors,
+        minRadius: 0.85,
+        maxRadius: 1,
+        clickModeRotate: false,
+        selectionPaths: true,
+        navAngle: -90,
+        animatetime: 0
+    });
+    block._modeWheel.createWheel(modeWheelLabels);
+
+    block._modeGroupWheel = new wheelnav("_modeGroupWheel", block._modeWheel.raphael);
+    configureWheel(block._modeGroupWheel, {
+        colors: platformColor.modeGroupWheelcolors,
+        minRadius: 0.15,
+        maxRadius: 0.3,
+        titleFont: getModeGroupTitleFont(block._modeWheel.wheelRadius),
+        selectionPaths: true,
+        navAngle: -90,
+        animatetime: 0
+    });
+
+    const xlabels = [];
+    for (const modegroup in MODE_PIE_MENUS) {
+        // Only show the "custom" group if there are saved custom modes
+        if (modegroup === "custom" && savedCustomModes.length === 0) {
+            continue;
+        }
+        xlabels.push(modegroup);
+    }
+
+    block._modeGroupWheel.createWheel(xlabels);
+
+    configureWheel(block._exitWheel, {
+        colors: platformColor.exitWheelcolors,
+        minRadius: 0.0,
+        maxRadius: 0.15,
+        clickModeRotate: false,
+        selectionPaths: true,
+        navAngle: -90,
+        animatetime: 0
+    });
+    block._exitWheel.initWheel(["×", "▶"]);
+    block._exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].sliceSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].sliceHoverAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].titleSelectedAttr.cursor = "pointer";
+    block._exitWheel.navItems[1].titleHoverAttr.cursor = "pointer";
+    block._exitWheel.createWheel();
+    configureExitWheel(block._exitWheel);
+
+    const that = block;
+
+    // Mode list for a group; "custom" is dynamic, padded to the fixed 12-slot layout.
+    const __modesForGroup = grp =>
+        getModeNamesForGroup(
+            grp,
+            savedCustomModes.map(m => m.name)
+        );
+
+    const __selectionChanged = () => {
+        const title = that._modeNameWheel.navItems[that._modeNameWheel.selectedNavItemIndex].title;
+        if (title === " ") {
+            that._modeNameWheel.navigateWheel(
+                (that._modeNameWheel.selectedNavItemIndex + 1) % that._modeNameWheel.navItems.length
+            );
+        } else {
+            that.text.text =
+                that._modeNameWheel.navItems[that._modeNameWheel.selectedNavItemIndex].title;
+
+            that.value = getModeNameFromLabel(that.text.text, __modesForGroup(modeGroup));
+
+            // Make sure text is on top.
+            that.container.setChildIndex(that.text, that.container.children.length - 1);
+            that.updateCache();
+            if (isInitialized && !isRebuilding && typeof onSelect === "function") {
+                onSelect(that.value, that.text.text);
+            }
+        }
+    };
+
+    // Add function to each main menu for show/hide sub menus
+    const __setupAction = (i, activeTabs) => {
+        const edoforHide = currentEDO;
+        that._modeNameWheel.navItems[i].navigateFunction = () => {
+            for (let j = 0; j < edoforHide; j++) {
+                if (!activeTabs.includes(j)) {
+                    that._modeWheel.navItems[j].navItem.hide();
+                } else {
+                    that._modeWheel.navItems[j].navItem.show();
+                }
+            }
+
+            __selectionChanged();
+        };
+    };
+
+    // Build a pie menu of modes based on the current mode group.
+    const __buildModeNameWheel = grp => {
+        let newWheel = false;
+        if (that._modeNameWheel === null) {
+            that._modeNameWheel = new wheelnav("_modeNameWheel", that._modeWheel.raphael);
+            configureWheel(that._modeNameWheel, {
+                colors: [],
+                minRadius: 0.3,
+                maxRadius: 0.85,
+                selectionPaths: true,
+                navAngle: -90,
+                animatetime: 0
+            });
+            that._modeNameWheel.keynavigateEnabled = true;
+            newWheel = true;
+        }
+
+        const modes = __modesForGroup(grp);
+
+        // Customize slicePaths
+        const colors = getModeSliceColors(modes, {
+            emptyColor: platformColor.modePieMenusIfColorPush,
+            filledColor: platformColor.modePieMenusElseColorPush
+        });
+
+        that._modeNameWheel.colors = colors;
+        that._modeNameWheel.titleRotateAngle = 0;
+        const labels = modes.map(getModeLabel);
+
+        that._modeNameWheel.animatetime = 0;
+        if (newWheel) {
+            that._modeNameWheel.createWheel(labels);
+        } else {
+            updateWheelItems(that._modeNameWheel, labels, colors);
+        }
+
+        // Size each label to fit its own slice arc; the 12 slots are fixed,
+        // so short names render large and only long ones shrink. Applied
+        // post-createWheel via the per-item title attributes.
+        for (let i = 0; i < that._modeNameWheel.navItems.length; i++) {
+            const font = getModeSliceFont(
+                that._modeWheel.wheelRadius,
+                labels.length,
+                labels[i].length
+            );
+            that._modeNameWheel.navItems[i].titleAttr.font = font;
+            that._modeNameWheel.navItems[i].titleHoverAttr.font = font;
+            that._modeNameWheel.navItems[i].titleSelectedAttr.font = font;
+        }
+
+        // Set up tabs for each mode.
+        let i = 0;
+        for (let j = 0; j < modes.length; j++) {
+            const modename = modes[j];
+            const activeTabs = [0];
+            if (modename !== " " && MUSICALMODES[modename]) {
+                const mode =
+                    (nonEDO && getNonEDOModeSteps(modename, inTemperament)) ||
+                    MUSICALMODES[modename];
+                for (let k = 0; k < mode.length; k++) {
+                    activeTabs.push(last(activeTabs) + mode[k]);
+                }
+            }
+
+            __setupAction(i, activeTabs);
+            i += 1;
+        }
+
+        // Look for the selected mode.
+        for (i = 0; i < modes.length; i++) {
+            if (modes[i] === selectedMode) {
+                break;
+            }
+        }
+
+        // if we didn't find the mode, use a default
+        if (i === labels.length) {
+            i = 0; // major/ionian
+        }
+
+        that._modeNameWheel.navigateWheel(i);
+    };
+
+    let timeout;
+
+    const __exitMenu = () => {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
+        that._piemenuExitTime = new Date().getTime();
+        hideWheelDiv();
+        if (that._modeNameWheel !== null) {
+            that._modeNameWheel.removeWheel();
+        }
+    };
+
+    const __playNote = () => {
+        const i = that._modeWheel.selectedNavItemIndex;
+        let o = 0;
+        if (octave) {
+            o = currentEDO;
+        }
+
+        const tur = that.activity.turtles.ithTurtle(0);
+
+        if (!tur.singer.instrumentNames.includes(DEFAULTVOICE)) {
+            that.activity.logo.synth.createDefaultSynth(0);
+            that.activity.logo.synth.loadSynth(0, DEFAULTVOICE);
+        }
+
+        that.activity.logo.synth.setMasterVolume(DEFAULTVOLUME);
+        that.activity.logo.synth.setVolume(0, DEFAULTVOICE, DEFAULTVOLUME);
+
+        if (nonEDO) {
+            const result = getNonEDOFrequency(i + o, 4, inTemperament, key + " chromatic");
+            if (result) {
+                that.activity.logo.synth.trigger(
+                    0,
+                    [result.freq],
+                    1 / 12,
+                    DEFAULTVOICE,
+                    null,
+                    null
+                );
+                return;
+            }
+        }
+
+        const obj = getNote(key, 4, i + o, key + " chromatic", false, null, null, null, true);
+        obj[0] = obj[0].replace(SHARP, "#").replace(FLAT, "b");
+
+        that.activity.logo.synth.trigger(0, [obj[0] + obj[1]], 1 / 12, DEFAULTVOICE, null, null);
+    };
+
+    const __playScale = (activeTabs, idx) => {
+        // loop through selecting modeWheel slices with a delay.
+        if (idx < activeTabs.length) {
+            if (activeTabs[idx] < currentEDO) {
+                octave = false;
+                that._modeWheel.navigateWheel(activeTabs[idx]);
+            } else {
+                octave = true;
+                that._modeWheel.navigateWheel(activeTabs[idx] - currentEDO);
+            }
+
+            timeout = setTimeout(() => {
+                __playScale(activeTabs, idx + 1);
+            }, 1000 / 10); // slight delay between notes
+        }
+    };
+
+    /*
+     * prepare scale
+     * @return{void}
+     * @private
+     */
+    const __prepScale = () => {
+        const activeTabs = [0];
+        const scaleInfo = buildScale(key + " " + that.value);
+        const modeIntervals = scaleInfo[1];
+        for (let k = 0; k < modeIntervals.length - 1; k++) {
+            activeTabs.push(last(activeTabs) + modeIntervals[k]);
+        }
+
+        activeTabs.push(currentEDO);
+        activeTabs.push(currentEDO);
+
+        for (let k = modeIntervals.length - 1; k >= 0; k--) {
+            activeTabs.push(last(activeTabs) - modeIntervals[k]);
+        }
+
+        docById("wheelnav-_exitWheel-title-1").style.fill = platformColor.textColor || "#ffffff";
+        docById("wheelnav-_exitWheel-title-1").style.pointerEvents = "none";
+        docById("wheelnav-_exitWheel-slice-1").style.pointerEvents = "none";
+        setTimeout(
+            () => {
+                const playButtonTitle = docById("wheelnav-_exitWheel-title-1");
+                const playButtonSlice = docById("wheelnav-_exitWheel-slice-1");
+                if (playButtonTitle && playButtonSlice) {
+                    playButtonTitle.style.fill = platformColor.textColor || "#000000";
+                    playButtonTitle.style.pointerEvents = "auto";
+                    playButtonSlice.style.pointerEvents = "auto";
+                }
+            },
+            (20 * 1000) / 10
+        );
+
+        __playScale(activeTabs, 0);
+    };
+
+    // position widget
+    const x = block.container.x;
+    const y = block.container.y;
+
+    const canvasLeft = block.activity.canvas.offsetLeft + 28 * block.blocks.blockScale;
+    const canvasTop = block.activity.canvas.offsetTop + 6 * block.blocks.blockScale;
+
+    const desiredLeft =
+        Math.round(
+            (x + block.activity.blocksContainer.x) * block.activity.getStageScale() + canvasLeft
+        ) - 200;
+    const desiredTop =
+        Math.round(
+            (y + block.activity.blocksContainer.y) * block.activity.getStageScale() + canvasTop
+        ) - 200;
+
+    positionWheelDiv(block, 600, desiredLeft, desiredTop);
+
+    for (let i = 0; i < currentEDO; i++) {
+        that._modeWheel.navItems[i].navigateFunction = __playNote;
+    }
+
+    // Navigate to a specific starting point.
+    let matchedGroup = "";
+    for (const group in MODE_PIE_MENUS) {
+        if (MODE_PIE_MENUS[group].includes(selectedMode)) {
+            matchedGroup = group;
+            break;
+        }
+    }
+
+    if (matchedGroup === "" && savedCustomModes.some(m => m.name === selectedMode)) {
+        matchedGroup = "custom";
+    }
+
+    if (selectedMode === "major") {
+        matchedGroup = "7";
+    }
+    modeGroup = matchedGroup;
+
+    const __buildModeWheel = () => {
+        const i = that._modeGroupWheel.selectedNavItemIndex;
+        modeGroup = that._modeGroupWheel.navItems[i].title;
+        isRebuilding = true;
+        __buildModeNameWheel(modeGroup);
+        isRebuilding = false;
+    };
+
+    for (let i = 0; i < block._modeGroupWheel.navItems.length; i++) {
+        block._modeGroupWheel.navItems[i].navigateFunction = __buildModeWheel;
+    }
+
+    for (let i = 0; i < block._modeGroupWheel.navItems.length; i++) {
+        if (block._modeGroupWheel.navItems[i].title === modeGroup) {
+            block._modeGroupWheel.navigateWheel(i);
+            break;
+        }
+    }
+
+    isInitialized = true;
+
+    block._exitWheel.navItems[0].navigateFunction = __exitMenu;
+    block._exitWheel.navItems[1].navigateFunction = __prepScale;
+};
+
+/**
+ * Creates pie menu for Grid selection.
+ *
+ * @returns {void}
+ */
+const piemenuGrid = activity => {
+    docById("wheelDivptm").style.display = "none";
+    docById("wheelDivptm").classList.add("grid-wheel");
+    const x = activity.turtles.gridButton.getBoundingClientRect().x;
+    const y = activity.turtles.gridButton.getBoundingClientRect().y;
+    docById("wheelDivptm").style.position = "absolute";
+    docById("wheelDivptm").style.height = "400px";
+    docById("wheelDivptm").style.width = "400px";
+    docById("wheelDivptm").style.left =
+        Math.min(activity.turtles._canvas.width - 200, Math.max(0, x * activity.getStageScale())) -
+        350 +
+        "px";
+    docById("wheelDivptm").style.top =
+        Math.min(activity.turtles._canvas.height - 250, Math.max(0, y * activity.getStageScale())) +
+        "px";
+    docById("wheelDivptm").style.display = "";
+
+    let grids, gridLabels;
+    if (_THIS_IS_TURTLE_BLOCKS_) {
+        grids = [
+            "imgsrc: images/grid/blank.svg",
+            "imgsrc: images/grid/Cartesian.svg",
+            "imgsrc: images/grid/Cartesian polar.svg",
+            "imgsrc: images/grid/Polar.svg",
+            ""
+        ];
+
+        gridLabels = ["none", "Cartesian", "Cartesian/Polar", "polar", "none"];
+    } else {
+        grids = [
+            "imgsrc: images/grid/blank.svg",
+            "imgsrc: images/grid/Cartesian.svg",
+            "imgsrc: images/grid/Cartesian polar.svg",
+            "imgsrc: images/grid/Polar.svg",
+            "imgsrc: images/grid/Treble.svg",
+            "imgsrc: images/grid/Grand.svg",
+            "imgsrc: images/grid/Mezzo-soprano.svg",
+            "imgsrc: images/grid/Alto.svg",
+            "imgsrc: images/grid/Tenor.svg",
+            "imgsrc: images/grid/Bass.svg"
+        ];
+
+        // Use the same strings as found in ExtrasBlocks.js for i18n purposes.
+        gridLabels = [
+            "none",
+            "Cartesian",
+            "Cartesian/Polar",
+            "polar",
+            "treble",
+            "grand staff",
+            "mezzo-soprano",
+            "alto",
+            "tenor",
+            "bass"
+        ];
+    }
+
+    activity.turtles.gridWheel = new wheelnav("wheelDivptm", null, 300, 300);
+    activity.turtles._exitWheel = new wheelnav("_exitWheel", activity.turtles.gridWheel.raphael);
+
+    activity.turtles.gridWheel.keynavigateEnabled = true;
+    activity.turtles.gridWheel.slicePathFunction = slicePath().DonutSlice;
+    activity.turtles.gridWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    activity.turtles.gridWheel.colors = platformColor.gridWheelcolors.wheel;
+    activity.turtles.gridWheel.slicePathCustom.minRadiusPercent = 0.3;
+    activity.turtles.gridWheel.slicePathCustom.maxRadiusPercent = 1;
+    activity.turtles.gridWheel.sliceSelectedPathCustom = activity.turtles.gridWheel.slicePathCustom;
+    activity.turtles.gridWheel.sliceInitPathCustom = activity.turtles.gridWheel.slicePathCustom;
+    activity.turtles.gridWheel.animatetime = 0; // 300;
+    activity.turtles.gridWheel.clickModeRotate = true;
+    const { fill, stroke } = platformColor.gridWheelcolors.selected;
+    activity.turtles.gridWheel.sliceHoverAttr = { fill, stroke, "stroke-width": 2 };
+    activity.turtles.gridWheel.sliceSelectedAttr = { fill, stroke, "stroke-width": 2 };
+
+    activity.turtles.gridWheel.clockwise = false;
+    activity.turtles.gridWheel.initWheel(grids);
+    activity.turtles.gridWheel.createWheel();
+    const storedGrid = activity.turtles.currentGrid ?? 0;
+    activity.turtles.gridWheel.navigateWheel(storedGrid);
+
+    for (let i = 0; i < gridLabels.length; i++) {
+        activity.turtles.gridWheel.navItems[i].navigateFunction = function () {
+            activity.hideGrids();
+            activity.turtles.currentGrid = i;
+            activity.turtles.doGrid(i);
+        };
+        activity.turtles.gridWheel.navItems[i].setTooltip(_(gridLabels[i]));
+    }
+
+    activity.turtles._exitWheel.colors = platformColor.exitWheelcolors;
+    activity.turtles._exitWheel.slicePathFunction = slicePath().DonutSlice;
+    activity.turtles._exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    activity.turtles._exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    activity.turtles._exitWheel.slicePathCustom.maxRadiusPercent = 0.3;
+    activity.turtles._exitWheel.sliceSelectedPathCustom =
+        activity.turtles._exitWheel.slicePathCustom;
+    activity.turtles._exitWheel.sliceInitPathCustom = activity.turtles._exitWheel.slicePathCustom;
+    activity.turtles._exitWheel.clickModeRotate = false;
+    activity.turtles._exitWheel.createWheel(["×", " "]);
+    configureExitWheel(activity.turtles._exitWheel);
+
+    activity.turtles._exitWheel.navItems[0].navigateFunction = () => {
+        hidePiemenu(activity);
+    };
+
+    activity.closeHelpfulWheel();
+
+    const hidePiemenu = activity => {
+        docById("wheelDivptm").style.display = "none";
+        docById("wheelDivptm").classList.remove("grid-wheel");
+        activity.turtles.gridWheel.removeWheel();
+        activity.turtles._exitWheel.removeWheel();
+    };
+
+    const clickOutsideHandler = event => {
+        const piemenu = docById("wheelDivptm");
+        if (!piemenu.contains(event.target)) {
+            hidePiemenu(activity);
+            document.removeEventListener("mousedown", clickOutsideHandler);
+        }
+    };
+
+    document.addEventListener("mousedown", clickOutsideHandler);
+};
+
+/** Sync setkey2 block with activity.KeySignatureEnv (create or update in place). */
+const syncKeySignatureBlocks = activity => {
+    const setKeyBlock =
+        Object.values(activity.blocks.blockList).find(b => b && b.name === "setkey2" && !b.trash) ||
+        null;
+
+    if (setKeyBlock === null) {
+        activity.blocks.findStacks();
+        const stacks = activity.blocks.stackList;
+        // Block ids are numbers; the default sort would put 10 before 9.
+        stacks.sort((a, b) => a - b);
+        for (const stackId of stacks) {
+            if (activity.blocks.blockList[stackId].name === "start") {
+                const bottomBlock = activity.blocks.blockList[stackId].connections[1];
+                let connectionsSetKey;
+                let movable;
+                if (activity.KeySignatureEnv[2]) {
+                    activity.blocks._makeNewBlockWithConnections(
+                        "movable",
+                        0,
+                        [stackId, null, null],
+                        null,
+                        null
+                    );
+                    movable = activity.logo.blocks.blockList.length - 1;
+                    activity.blocks._makeNewBlockWithConnections(
+                        "boolean",
+                        0,
+                        [movable],
+                        null,
+                        null
+                    );
+                    activity.blocks.blockList[movable].connections[1] =
+                        activity.blocks.blockList.length - 1;
+                    connectionsSetKey = [movable, null, null, bottomBlock];
+                } else {
+                    connectionsSetKey = [stackId, null, null, bottomBlock];
+                }
+
+                activity.blocks._makeNewBlockWithConnections(
+                    "setkey2",
+                    0,
+                    connectionsSetKey,
+                    null,
+                    null
+                );
+                const setKey = activity.blocks.blockList.length - 1;
+                // An empty start block has no first child to re-parent.
+                if (bottomBlock !== null) {
+                    activity.blocks.blockList[bottomBlock].connections[0] = setKey;
+                }
+
+                if (activity.KeySignatureEnv[2]) {
+                    activity.blocks.blockList[stackId].connections[1] = movable;
+                    activity.blocks.blockList[movable].connections[2] = setKey;
+                } else {
+                    activity.blocks.blockList[stackId].connections[1] = setKey;
+                }
+
+                activity.blocks.adjustExpandableClampBlock();
+
+                activity.blocks._makeNewBlockWithConnections("notename", 0, [setKey], null, null);
+                activity.blocks.blockList[setKey].connections[1] =
+                    activity.blocks.blockList.length - 1;
+                activity.blocks.blockList[activity.blocks.blockList.length - 1].value =
+                    activity.KeySignatureEnv[0];
+                activity.blocks._makeNewBlockWithConnections("modename", 0, [setKey], null, null);
+                activity.blocks.blockList[setKey].connections[2] =
+                    activity.blocks.blockList.length - 1;
+                activity.blocks.blockList[activity.blocks.blockList.length - 1].value =
+                    activity.KeySignatureEnv[1];
+                activity.textMsg(
+                    `${_("You have chosen key for your pitch preview.")} ${
+                        activity.KeySignatureEnv[0]
+                    } ${activity.KeySignatureEnv[1]}`
+                );
+                break;
+            }
+        }
+        return;
+    }
+
+    const conn1 = setKeyBlock.connections[1];
+    const conn2 = setKeyBlock.connections[2];
+    if (
+        conn1 !== null &&
+        activity.blocks.blockList[conn1] &&
+        activity.blocks.blockList[conn1].name === "notename"
+    ) {
+        activity.blocks.blockList[conn1].value = activity.KeySignatureEnv[0];
+        activity.blocks.updateBlockText(conn1);
+    }
+    if (
+        conn2 !== null &&
+        activity.blocks.blockList[conn2] &&
+        activity.blocks.blockList[conn2].name === "modename"
+    ) {
+        activity.blocks.blockList[conn2].value = activity.KeySignatureEnv[1];
+        activity.blocks.updateBlockText(conn2);
+    }
+    activity.refreshCanvas();
+};
+
+const piemenuKey = activity => {
+    docById("chooseKeyDiv").style.display = "block";
+    docById("movable").style.display = "block";
+
+    const keyNameWheel = new wheelnav("chooseKeyDiv", null, 1300, 1300);
+    const keyNameWheel2 = new wheelnav("keyNameWheel2", keyNameWheel.raphael);
+    const keys = [
+        "C",
+        "G",
+        "D",
+        "A",
+        "E",
+        "B/C♭",
+        "F♯/G♭",
+        "C♯/D♭",
+        "G♯/A♭",
+        "D♯/E♭",
+        "A♯/B♭",
+        "F"
+    ];
+
+    wheelnav.cssMode = true;
+
+    keyNameWheel.slicePathFunction = slicePath().DonutSlice;
+    keyNameWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    keyNameWheel.slicePathCustom.minRadiusPercent = 0.6;
+    keyNameWheel.slicePathCustom.maxRadiusPercent = 0.9;
+    keyNameWheel.sliceSelectedPathCustom = keyNameWheel.slicePathCustom;
+    keyNameWheel.sliceInitPathCustom = keyNameWheel.slicePathCustom;
+    keyNameWheel.titleRotateAngle = 0;
+    keyNameWheel.colors = platformColor.pitchWheelcolors;
+    keyNameWheel.animatetime = 0;
+
+    keyNameWheel.createWheel(keys);
+
+    keyNameWheel2.colors = platformColor.pitchWheelcolors;
+    keyNameWheel2.slicePathFunction = slicePath().DonutSlice;
+    keyNameWheel2.slicePathCustom = slicePath().DonutSliceCustomization();
+    keyNameWheel2.slicePathCustom.minRadiusPercent = 0.9;
+    keyNameWheel2.slicePathCustom.maxRadiusPercent = 1;
+    keyNameWheel2.sliceSelectedPathCustom = keyNameWheel2.slicePathCustom;
+    keyNameWheel2.sliceInitPathCustom = keyNameWheel2.slicePathCustom;
+
+    const keys2 = [];
+    for (let i = 0; i < keys.length; i++) {
+        if (keys[i].length > 2) {
+            const obj = keys[i].split("/");
+            keys2.push(obj[0]);
+            keys2.push(obj[1]);
+        } else {
+            keys2.push("");
+            keys2.push("");
+        }
+    }
+
+    keyNameWheel2.navAngle = -7.45;
+    keyNameWheel2.animatetime = 0;
+    keyNameWheel2.createWheel(keys2);
+
+    const modenameWheel = new wheelnav("modenameWheel", keyNameWheel.raphael);
+    // Mode list mirrors the mode-widget pie menu (all MODE_PIE_MENUS groups + custom).
+    const savedCustomModes = getSavedCustomModes();
+    const modes = [
+        ...new Set(
+            Object.entries(MODE_PIE_MENUS).flatMap(([grp, grpModes]) =>
+                grp === "custom" ? savedCustomModes.map(m => m.name) : grpModes
+            )
+        )
+    ].filter(m => m && m !== " ");
+    modenameWheel.slicePathFunction = slicePath().DonutSlice;
+    modenameWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    modenameWheel.slicePathCustom.minRadiusPercent = 0.2;
+    modenameWheel.slicePathCustom.maxRadiusPercent = 0.6;
+    modenameWheel.sliceSelectedPathCustom = modenameWheel.slicePathCustom;
+    modenameWheel.sliceInitPathCustom = modenameWheel.slicePathCustom;
+    modenameWheel.titleRotateAngle = 0;
+    modenameWheel.colors = getModeSliceColors(modes, {
+        emptyColor: platformColor.modePieMenusIfColorPush,
+        filledColor: platformColor.modePieMenusElseColorPush
+    });
+    modenameWheel.animatetime = 0;
+    modenameWheel.createWheel(modes);
+
+    // Fit each label to its slice arc; default font overflows on ~40 thin slices.
+    for (let i = 0; i < modenameWheel.navItems.length; i++) {
+        const font = getModeSliceFont(modenameWheel.wheelRadius, modes.length, modes[i].length);
+        ["titleAttr", "titleHoverAttr", "titleSelectedAttr"].forEach(
+            k => (modenameWheel.navItems[i][k].font = font)
+        );
+    }
+    modenameWheel.refreshWheel();
+
+    const exitWheel = new wheelnav("exitWheel", keyNameWheel.raphael);
+    exitWheel.slicePathFunction = slicePath().DonutSlice;
+    exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    exitWheel.sliceSelectedPathCustom = exitWheel.slicePathCustom;
+    exitWheel.sliceInitPathCustom = exitWheel.slicePathCustom;
+    exitWheel.titleRotateAngle = 0;
+    exitWheel.clickModeRotate = false;
+    exitWheel.colors = platformColor.exitWheelcolors;
+    exitWheel.animatetime = 0;
+    exitWheel.createWheel(["×", " "]);
+    configureExitWheel(exitWheel);
+
+    const x = event.clientX;
+    const y = event.clientY;
+    const bounds = getWheelSafeBounds({ activity });
+    const chooseKeyDiv = docById("chooseKeyDiv");
+    const movableDiv = docById("movable");
+    const movableRect =
+        typeof movableDiv.getBoundingClientRect === "function"
+            ? movableDiv.getBoundingClientRect()
+            : null;
+    const movableHeight = movableDiv.offsetHeight || (movableRect && movableRect.height) || 0;
+    const availableHeight = bounds.bottomBound - bounds.safeTop - movableHeight - 8;
+    const wheelSize = Math.max(
+        0,
+        Math.min(350, bounds.rightBound - bounds.safeLeft - 8, availableHeight)
+    );
+    chooseKeyDiv.style.width = wheelSize + "px";
+    chooseKeyDiv.style.height = wheelSize + "px";
+    const maxLeft = Math.max(bounds.safeLeft, bounds.rightBound - wheelSize - 8);
+    const maxTop = Math.max(bounds.safeTop, bounds.bottomBound - wheelSize - movableHeight - 8);
+    const left = Math.min(maxLeft, Math.max(bounds.safeLeft, x - wheelSize / 2));
+    const top = Math.min(maxTop, Math.max(bounds.safeTop, y + 50));
+
+    chooseKeyDiv.style.left = left + "px";
+    chooseKeyDiv.style.top = top + "px";
+
+    const movableWidth = movableDiv.offsetWidth || (movableRect && movableRect.width) || 0;
+    let marginLeft = parseFloat(movableDiv.style.marginLeft);
+    let marginRight = parseFloat(movableDiv.style.marginRight);
+    if (movableDiv.nodeType === 1 && typeof window.getComputedStyle === "function") {
+        const computedStyle = window.getComputedStyle(movableDiv);
+        const computedLeft = parseFloat(computedStyle.marginLeft);
+        const computedRight = parseFloat(computedStyle.marginRight);
+        if (!Number.isNaN(computedLeft)) marginLeft = computedLeft;
+        if (!Number.isNaN(computedRight)) marginRight = computedRight;
+    }
+    if (Number.isNaN(marginLeft)) marginLeft = 0;
+    if (Number.isNaN(marginRight)) marginRight = 0;
+    const movableOuter = marginLeft + movableWidth + marginRight;
+    const movableLeft = Math.min(left + 65, bounds.rightBound - 8 - movableOuter);
+
+    movableDiv.style.left = movableLeft + "px";
+    movableDiv.style.top = top + wheelSize + "px";
+
+    const __exitMenu = () => {
+        docById("chooseKeyDiv").style.display = "none";
+        docById("movable").style.display = "none";
+        const ele = document.getElementsByName("movable");
+        for (let i = 0; i < ele.length; i++) {
+            if (ele[i].checked) {
+                activity.KeySignatureEnv[2] = ele[i].value === "true" ? true : false;
+            }
+        }
+        keyNameWheel.removeWheel();
+        keyNameWheel2.removeWheel();
+        modenameWheel.removeWheel();
+        activity.storage.KeySignatureEnv = activity.KeySignatureEnv;
+        syncKeySignatureBlocks(activity);
+    };
+
+    exitWheel.navItems[0].navigateFunction = __exitMenu;
+
+    const __playNote = note => {
+        const obj = getNote(
+            note,
+            4,
+            null,
+            note + " " + activity.KeySignatureEnv[1],
+            false,
+            null,
+            null
+        );
+        obj[0] = obj[0].replace(SHARP, "#").replace(FLAT, "b");
+
+        const tur = activity.turtles.ithTurtle(0);
+        if (!tur.singer.instrumentNames.includes(DEFAULTVOICE)) {
+            tur.singer.instrumentNames.push(DEFAULTVOICE);
+            activity.logo.synth.createDefaultSynth(0);
+            activity.logo.synth.loadSynth(0, DEFAULTVOICE);
+        }
+
+        activity.logo.synth.setMasterVolume(DEFAULTVOLUME);
+        Singer.setSynthVolume(activity.logo, 0, DEFAULTVOICE, DEFAULTVOLUME);
+        activity.logo.synth.trigger(0, [obj[0] + obj[1]], 1 / 12, DEFAULTVOICE, null, null);
+    };
+
+    const __selectionChangedKey = () => {
+        const selection = keyNameWheel.navItems[keyNameWheel.selectedNavItemIndex].title;
+        keyNameWheel2.navigateWheel(2 * keyNameWheel.selectedNavItemIndex);
+        if (selection === "") {
+            keyNameWheel.navigateWheel(
+                (keyNameWheel.selectedNavItemIndex + 1) % keyNameWheel.navItems.length
+            );
+        } else if (selection.length <= 2) {
+            activity.KeySignatureEnv[0] = selection;
+        }
+        activity.storage.KeySignatureEnv = activity.KeySignatureEnv;
+    };
+
+    const __setupActionKey = i => {
+        keyNameWheel.navItems[i].navigateFunction = () => {
+            for (let j = 0; j < keys2.length; j++) {
+                if (Math.floor(j / 2) !== i) {
+                    keyNameWheel2.navItems[j].navItem.hide();
+                } else {
+                    if (keys[i].length > 2) {
+                        keyNameWheel2.navItems[j].navItem.show();
+                    }
+                }
+            }
+            __selectionChangedKey();
+            if ((i >= 0 && i < 5) || (i > 9 && i < 12)) {
+                __playNote(activity.KeySignatureEnv[0]);
+            } else {
+                let selection = keyNameWheel.navItems[keyNameWheel.selectedNavItemIndex].title;
+                selection = selection.split("/");
+                __playNote(selection[0]);
+            }
+        };
+    };
+
+    for (let i = 0; i < keys.length; i++) {
+        __setupActionKey(i);
+    }
+
+    const __selectionChangedMode = () => {
+        const selection = modenameWheel.navItems[modenameWheel.selectedNavItemIndex].title;
+        if (selection === "") {
+            modenameWheel.navigateWheel(
+                (modenameWheel.selectedNavItemIndex + 1) % modenameWheel.navItems.length
+            );
+        } else {
+            activity.KeySignatureEnv[1] = selection;
+        }
+        activity.storage.KeySignatureEnv = activity.KeySignatureEnv;
+    };
+
+    for (let i = 0; i < modes.length; i++) {
+        modenameWheel.navItems[i].navigateFunction = () => {
+            __selectionChangedMode();
+        };
+    }
+
+    const __selectionChangedKey2 = () => {
+        const selection = keyNameWheel2.navItems[keyNameWheel2.selectedNavItemIndex].title;
+        activity.KeySignatureEnv[0] = selection;
+        activity.storage.KeySignatureEnv = activity.KeySignatureEnv;
+    };
+
+    for (let i = 0; i < keys2.length; i++) {
+        keyNameWheel2.navItems[i].navigateFunction = () => {
+            __selectionChangedKey2();
+        };
+    }
+
+    if (activity.storage.KeySignatureEnv !== undefined) {
+        const ks = activity.storage.KeySignatureEnv.split(",");
+        activity.KeySignatureEnv[0] = ks[0];
+        activity.KeySignatureEnv[1] = ks[1];
+        activity.KeySignatureEnv[2] = ks[2] === "true" ? true : false;
+        activity.storage.KeySignatureEnv = activity.KeySignatureEnv;
+    } else {
+        activity.KeySignatureEnv = ["C", "major", false];
+        activity.storage.KeySignatureEnv = activity.KeySignatureEnv;
+    }
+
+    let i = keys.indexOf(activity.KeySignatureEnv[0]);
+    if (i === -1) {
+        i = keys2.indexOf(activity.KeySignatureEnv[0]);
+        if (i !== -1) {
+            keyNameWheel.navigateWheel(Math.floor(i / 2));
+            keyNameWheel2.navigateWheel(i);
+            for (let j = 0; j < keys2.length; j++) {
+                keyNameWheel2.navItems[j].navItem.hide();
+                if (i % 2 === 0) {
+                    keyNameWheel2.navItems[i].navItem.show();
+                    keyNameWheel2.navItems[i + 1].navItem.show();
+                } else {
+                    keyNameWheel2.navItems[i].navItem.show();
+                    keyNameWheel2.navItems[i - 1].navItem.show();
+                }
+            }
+        }
+    } else {
+        keyNameWheel.navigateWheel(i);
+        keyNameWheel2.navItems[2 * i].navItem.hide();
+        keyNameWheel2.navItems[2 * i + 1].navItem.hide();
+    }
+
+    const j = modes.indexOf(activity.KeySignatureEnv[1]);
+    if (j !== -1) {
+        modenameWheel.navigateWheel(j);
+    }
+};
+
+/**
+ * Shows a pie menu for selecting the rhythm dissect number.
+ * Displays different options based on beginner mode.
+ * @param {Object} widget - The widget instance (RhythmRuler).
+ * @returns {void}
+ */
+const piemenuDissectNumber = widget => {
+    // Use activity.beginnerMode as the global beginnerMode variable references the DOM element
+    const isBeginnerMode = widget.activity.beginnerMode;
+
+    // Determine wheel values based on beginner mode
+    const wheelValues = isBeginnerMode ? [2, 3, 4] : [2, 3, 4, 5, 7];
+
+    const currentValue = parseInt(widget._dissectNumber.value, 10) || 2;
+
+    // Show the wheel div
+    showWheelDiv();
+
+    // Create the number wheel
+    const wheelSize = getPieMenuSize({ blocks: widget.activity.logo.blocks });
+    const numberWheel = new wheelnav("wheelDiv", null, wheelSize, wheelSize);
+    const exitWheel = new wheelnav("_exitWheel", numberWheel.raphael);
+
+    // Prepare labels with spacer
+    const wheelLabels = wheelValues.map(v => v.toString());
+    wheelLabels.push(null); // spacer
+
+    wheelnav.cssMode = true;
+    numberWheel.keynavigateEnabled = true;
+    numberWheel.colors = platformColor.numberWheelcolors;
+    numberWheel.slicePathFunction = slicePath().DonutSlice;
+    numberWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    numberWheel.slicePathCustom.minRadiusPercent = 0.2;
+    numberWheel.slicePathCustom.maxRadiusPercent = 0.6;
+    numberWheel.sliceSelectedPathCustom = numberWheel.slicePathCustom;
+    numberWheel.sliceInitPathCustom = numberWheel.slicePathCustom;
+    numberWheel.animatetime = 0;
+    numberWheel.createWheel(wheelLabels);
+
+    // Create exit wheel with close, minus, and plus buttons
+    exitWheel.colors = platformColor.exitWheelcolors2;
+    exitWheel.slicePathFunction = slicePath().DonutSlice;
+    exitWheel.slicePathCustom = slicePath().DonutSliceCustomization();
+    exitWheel.slicePathCustom.minRadiusPercent = 0.0;
+    exitWheel.slicePathCustom.maxRadiusPercent = 0.2;
+    exitWheel.sliceSelectedPathCustom = exitWheel.slicePathCustom;
+    exitWheel.sliceInitPathCustom = exitWheel.slicePathCustom;
+    exitWheel.clickModeRotate = false;
+    exitWheel.initWheel(["×", "-", "+"]); // Close, minus, plus
+    exitWheel.navItems[0].sliceSelectedAttr.cursor = "pointer";
+    exitWheel.navItems[0].sliceHoverAttr.cursor = "pointer";
+    exitWheel.navItems[0].titleSelectedAttr.cursor = "pointer";
+    exitWheel.navItems[0].titleHoverAttr.cursor = "pointer";
+    exitWheel.navItems[1].sliceSelectedAttr.cursor = "pointer";
+    exitWheel.navItems[1].sliceHoverAttr.cursor = "pointer";
+    exitWheel.navItems[1].titleSelectedAttr.cursor = "pointer";
+    exitWheel.navItems[1].titleHoverAttr.cursor = "pointer";
+    exitWheel.navItems[2].sliceSelectedAttr.cursor = "pointer";
+    exitWheel.navItems[2].sliceHoverAttr.cursor = "pointer";
+    exitWheel.navItems[2].titleSelectedAttr.cursor = "pointer";
+    exitWheel.navItems[2].titleHoverAttr.cursor = "pointer";
+    exitWheel.createWheel();
+    configureExitWheel(exitWheel);
+
+    // Handle selection
+    const __selectionChanged = () => {
+        const selectedIndex = numberWheel.selectedNavItemIndex;
+        const newValue = wheelValues[selectedIndex];
+        widget._dissectNumber.value = newValue;
+    };
+
+    // Handle exit
+    const __exitMenu = () => {
+        hideWheelDiv();
+        numberWheel.removeWheel();
+        exitWheel.removeWheel();
+    };
+
+    // Get button position for positioning the pie menu
+    const buttonRect = widget._dissectNumber.getBoundingClientRect();
+    const canvasLeft = widget.activity.canvas.offsetLeft + 28;
+    const canvasTop = widget.activity.canvas.offsetTop + 6;
+
+    const left = Math.round(buttonRect.left - canvasLeft);
+    const top = Math.round(buttonRect.top - canvasTop);
+
+    // Position to the left of the button as shown in user image
+    // left - 300 (wheel size) - 10px padding
+    // top + half button height - 150 (half wheel size) for vertical centering
+    const desiredLeft = left - 300 - 10;
+    const desiredTop = top + buttonRect.height / 2 - 150;
+    positionWheelDiv(widget, 300, desiredLeft, desiredTop);
+
+    // Navigate to current value
+    const currentIndex = wheelValues.indexOf(currentValue);
+    if (currentIndex !== -1) {
+        numberWheel.navigateWheel(currentIndex);
+    }
+
+    // Set up click handlers for number selections
+    for (let i = 0; i < wheelValues.length; i++) {
+        numberWheel.navItems[i].navigateFunction = () => {
+            __selectionChanged();
+            __exitMenu();
+        };
+    }
+
+    // Set up exit button (×)
+    exitWheel.navItems[0].navigateFunction = () => {
+        __exitMenu();
+    };
+
+    // Set up decrement button (-)
+    exitWheel.navItems[1].navigateFunction = () => {
+        const currentVal = parseInt(widget._dissectNumber.value, 10);
+        const currentIdx = wheelValues.indexOf(currentVal);
+
+        // Move to previous value in the array, or stay at first
+        if (currentIdx > 0) {
+            const newValue = wheelValues[currentIdx - 1];
+            widget._dissectNumber.value = newValue;
+        }
+    };
+
+    // Set up increment button (+)
+    exitWheel.navItems[2].navigateFunction = () => {
+        const currentVal = parseInt(widget._dissectNumber.value, 10);
+        const currentIdx = wheelValues.indexOf(currentVal);
+
+        // Move to next value in the array, or stay at last
+        if (currentIdx < wheelValues.length - 1) {
+            const newValue = wheelValues[currentIdx + 1];
+            widget._dissectNumber.value = newValue;
+        }
+    };
+};
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+        piemenuPitches,
+        piemenuAccidentals,
+        piemenuCustomNotes,
+        piemenuChords,
+        piemenuNoteValue,
+        piemenuIntervals,
+        piemenuKey,
+        piemenuNumber,
+        piemenuColor,
+        piemenuBoolean,
+        piemenuModes,
+        piemenuVoices,
+        piemenuBasic,
+        piemenuDissectNumber,
+        getTemperamentSliceFont,
+        getWheelSafeBounds,
+        positionWheelDiv,
+        handleEscapeKey,
+        dismissActivePieMenu,
+        showWheelDiv,
+        hideWheelDiv,
+        handleWheelResize,
+        debouncedSetWheelSize,
+        syncKeySignatureBlocks
+    };
+}

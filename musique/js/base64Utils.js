@@ -1,0 +1,66 @@
+/**
+ * @license
+ * MusicBlocks v3.4.1
+ * Copyright (C) 2024 Mohit Verma
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * Provides utility functions for Base64 encoding and decoding.
+ * @module base64Utils
+ */
+
+/* exported base64Encode, base64Decode */
+
+/**
+ * Encodes a string to Base64 format.
+ * @param {string} str - The string to encode.
+ * @returns {string} - The Base64 encoded string.
+ */
+function base64Encode(str) {
+    const encoder = new TextEncoder();
+    const uint8Array = encoder.encode(str);
+    // String.fromCharCode(...uint8Array) throws RangeError: Maximum call stack
+    // size exceeded for inputs larger than ~128KB because V8 limits function
+    // argument count to ~125K. A Music Blocks composition with 44+ blocks
+    // produces an SVG larger than this threshold. Use a loop instead —
+    // produces byte-for-byte identical output with no size limit.
+    let binaryString = "";
+    for (let i = 0; i < uint8Array.length; i++) {
+        binaryString += String.fromCharCode(uint8Array[i]);
+    }
+    return btoa(binaryString);
+}
+/**
+ * Decodes a Base64 encoded string.
+ *
+ * @remarks
+ * This function delegates decoding to `window.atob()` and does not perform
+ * its own input validation. Behavior with malformed input is
+ * runtime-dependent.
+ *
+ * @param {string} str - The Base64 encoded string.
+ * @returns {string} - The decoded string.
+ */
+function base64Decode(str) {
+    const binaryString = window.atob(str);
+    const uint8Array = new Uint8Array(binaryString.split("").map(char => char.charCodeAt(0)));
+    const decoder = new TextDecoder();
+    return decoder.decode(uint8Array);
+}
+
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { base64Encode, base64Decode };
+}

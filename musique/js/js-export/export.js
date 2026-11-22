@@ -1,0 +1,702 @@
+/**
+ * @file This contains the API classes' definitions and utilities for JavaScript based Music Blocks code.
+ * @author Anindya Kundu
+ *
+ * @copyright 2020 Anindya Kundu
+ *
+ * @license
+ * This program is free software; you can redistribute it and/or modify it under the terms of the
+ * The GNU Affero General Public License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ * You should have received a copy of the GNU Affero General Public License along with this
+ * library; if not, write to the Free Software Foundation, 51 Franklin Street, Suite 500 Boston,
+ * MA 02110-1335 USA.
+ *
+ * Private methods' names begin with underscore '_".
+ * Unused methods' names begin with double underscore '__'.
+ * Internal functions' names are in PascalCase.
+ */
+
+/* global JSEditor, last, importMembers, Singer, JSInterface, globalActivity, CAMERAVALUE, ManagedTimer */
+
+/**
+ * @class
+ * @classdesc pertains to the Mouse (corresponding to Turtle) in JavaScript based Music Blocks programs.
+ */
+const resolvePath = path =>
+    path
+        .split(".")
+        .reduce((obj, key) => obj?.[key], typeof window !== "undefined" ? window : globalThis);
+class Mouse {
+    /** Mouse objects in program */
+    static MouseList = [];
+    /** maps Turtle object (turtle ID) to Mouse object */
+    static TurtleMouseMap = {};
+    /** list of Turtle objects created by JavaScript based Music Blocks programs */
+    static AddedTurtles = [];
+
+    /**
+     * @constructor
+     * @param {Obj} Activity - object that contains activity
+     * @param {Function} flow - flow function associated with the Mouse
+     */
+    constructor(flow) {
+        const numberOfTurtles = globalActivity.turtles.getTurtleCount();
+        if (Mouse.MouseList.length < numberOfTurtles) {
+            this.turtle = globalActivity.turtles.getTurtle(Mouse.MouseList.length);
+        } else {
+            globalActivity.turtles.addTurtle();
+            this.turtle = globalActivity.turtles.getTurtle(numberOfTurtles);
+            Mouse.AddedTurtles.push(this.turtle);
+        }
+
+        this.turtle.initTurtle(false);
+
+        this.flow = flow;
+
+        this.MB = new MusicBlocks(this); // associate a MusicBlocks object with each Mouse
+
+        Mouse.MouseList.push(this);
+        Mouse.TurtleMouseMap[this.turtle.id] = this;
+    }
+
+    /**
+     * Returns corresponding Mouse object from a Turtle object.
+     *
+     * @static
+     * @param {Object} turtle - Turtle object
+     * @returns {Object|null} Mouse object
+     */
+    static getMouseFromTurtle(turtle) {
+        return turtle.id in Mouse.TurtleMouseMap ? Mouse.TurtleMouseMap[turtle.id] : null;
+    }
+
+    /**
+     * Executes the flow of the Mouse object.
+     * @returns {void}
+     */
+    run() {
+        this.turtle.doWait(0);
+        this.flow(this.MB);
+    }
+}
+
+/**
+ * @class
+ * @classdesc pertains to the execution behavior of JavaScript based Music Blocks programs.
+ */
+class MusicBlocks {
+    /** contains list of methods corresponding to each Action class */
+    static _methodList = {};
+    /** custom block numbers for JavaScript based Music Blocks programs */
+    static _blockNo = -1;
+    /** whether program is running */
+    static isRun = false;
+
+    /**
+     * @constructor
+     * @param {Object} mouse - corresponding Mouse object in Mouse.MouseList
+     */
+    constructor(mouse) {
+        this.mouse = mouse;
+        this.turtle = mouse.turtle;
+        this.turIndex = globalActivity.turtles.getIndexOfTurtle(this.turtle);
+
+        this.listeners = [];
+        this._executionTimeout = null;
+
+        if (MusicBlocks._blockNo === -1) {
+            MusicBlocks._blockNo = 0;
+        }
+
+        [
+            "GraphicsBlocksAPI",
+            "PenBlocksAPI",
+            "RhythmBlocksAPI",
+            "MeterBlocksAPI",
+            "PitchBlocksAPI",
+            "IntervalsBlocksAPI",
+            "ToneBlocksAPI",
+            "OrnamentBlocksAPI",
+            "VolumeBlocksAPI",
+            "DrumBlocksAPI",
+            "DictBlocksAPI"
+        ].forEach(className => importMembers(this, className));
+    }
+
+    /**
+     * Returns the next custom block number.
+     *
+     * @static
+     * @returns {String} block number
+     */
+    static get BLK() {
+        return "B" + MusicBlocks._blockNo++;
+    }
+
+    /**
+     * Initializes the JavaScript based Music BLocks program's global state at start and end of run.
+     *
+     * @static
+     * @param {Boolean} start - whether starting to run
+     */
+    static init(start) {
+        /**
+         * Creates a JSON object that maps API actions' class name to list of corresponding methods.
+         * Invoked at start of run.
+         * @returns {void}
+         */
+        function CreateAPIMethodList() {
+            [
+                "Painter",
+                // "Painter.GraphicsActions",
+                // "Painter.PenActions",
+                "Singer.RhythmActions",
+                "Singer.MeterActions",
+                "Singer.PitchActions",
+                "Singer.IntervalsActions",
+                "Singer.ToneActions",
+                "Singer.OrnamentActions",
+                "Singer.VolumeActions",
+                "Singer.DrumActions",
+                "Turtle.DictActions"
+            ].forEach(path => {
+                MusicBlocks._methodList[path] = [];
+
+                const classObj = resolvePath(path);
+
+                if (!classObj) {
+                    console.warn(`Class path "${path}" not found`);
+                    return;
+                }
+
+                if (path === "Painter") {
+                    for (const methodName of Object.getOwnPropertyNames(classObj.prototype)) {
+                        if (methodName !== "constructor" && !methodName.startsWith("_")) {
+                            MusicBlocks._methodList[path].push(methodName);
+                        }
+                    }
+                } else {
+                    for (const methodName of Object.getOwnPropertyNames(classObj)) {
+                        if (methodName !== "length" && methodName !== "prototype") {
+                            MusicBlocks._methodList[path].push(methodName);
+                        }
+                    }
+                }
+            });
+        }
+
+        if (start) {
+            MusicBlocks.isRun = true;
+            CreateAPIMethodList();
+        } else {
+            MusicBlocks.isRun = false;
+            MusicBlocks._methodList = {};
+            for (const mouse of Mouse.MouseList) {
+                if (mouse && mouse.MB) {
+                    mouse.MB.clearExecutionTimers();
+                }
+            }
+        }
+
+        for (const turtle of Mouse.AddedTurtles) {
+            turtle.container.visible = false;
+            turtle.inTrash = true;
+            const turIndex = globalActivity.turtles.getIndexOfTurtle(turtle);
+            globalActivity.turtles.removeTurtle(turIndex);
+        }
+
+        MusicBlocks._blockNo = -1;
+
+        Mouse.MouseList = [];
+        Mouse.TurtleMouseMap = {};
+        // Every run pushes onto AddedTurtles, so it has to be reset alongside
+        // its siblings. Otherwise it keeps the removed turtles referenced and
+        // the loop above re-walks every turtle from every previous run.
+        Mouse.AddedTurtles = [];
+    }
+
+    /**
+     * Executes the Music Blocks program by running all the mice.
+     *
+     * @static
+     * @returns {void}
+     */
+    static run() {
+        // Remove any listeners and pending timers that might be still active
+        for (const mouse of Mouse.MouseList) {
+            if (mouse && mouse.MB) {
+                mouse.MB.clearExecutionTimers();
+            }
+            for (const listener in mouse.turtle.listeners) {
+                if (
+                    globalActivity.logo.stage &&
+                    Object.prototype.hasOwnProperty.call(mouse.turtle.listeners, listener)
+                ) {
+                    globalActivity.logo.stage.removeEventListener(
+                        listener,
+                        mouse.turtle.listeners[listener],
+                        false
+                    );
+                }
+            }
+            mouse.turtle.listeners = {};
+        }
+
+        Singer.resetMasterVolume(globalActivity.logo);
+        globalActivity.logo.prepSynths();
+        globalActivity.logo.firstNoteTime = null;
+
+        Mouse.MouseList.forEach(mouse => mouse.run());
+    }
+
+    /**
+     * Retrieves or initializes the ManagedTimer instance for execution timers.
+     * @private
+     * @returns {Object|null}
+     */
+    _getTimerManager() {
+        if (
+            typeof globalActivity !== "undefined" &&
+            globalActivity &&
+            globalActivity.logo &&
+            globalActivity.logo._timerManager
+        ) {
+            return globalActivity.logo._timerManager;
+        }
+        if (typeof ManagedTimer !== "undefined") {
+            if (!this._timerManager) {
+                this._timerManager = new ManagedTimer();
+            }
+            return this._timerManager;
+        }
+        if (typeof require !== "undefined") {
+            try {
+                const ManagedTimerCtor = require("../utils/ManagedTimer");
+                if (!this._timerManager) {
+                    this._timerManager = new ManagedTimerCtor();
+                }
+                return this._timerManager;
+            } catch (e) {
+                // Ignore fallback error
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Schedules a callback with delay via ManagedTimer if available, falling back to setTimeout.
+     * @private
+     * @param {Function} callback
+     * @param {number} delay
+     * @returns {number|Object}
+     */
+    _setExecutionTimeout(callback, delay) {
+        if (this._executionTimeout !== null && this._executionTimeout !== undefined) {
+            this._clearExecutionTimeout(this._executionTimeout);
+            this._executionTimeout = null;
+        }
+        const timerManager = this._getTimerManager();
+        if (timerManager) {
+            return timerManager.setTimeout(callback, delay);
+        }
+        return setTimeout(callback, delay);
+    }
+
+    /**
+     * Clears an execution timer scheduled via _setExecutionTimeout.
+     * @private
+     * @param {number|Object} id
+     * @returns {void}
+     */
+    _clearExecutionTimeout(id) {
+        if (id === null || id === undefined) {
+            return;
+        }
+        const timerManager = this._getTimerManager();
+        if (timerManager && typeof timerManager.clearTimeout === "function") {
+            const cleared = timerManager.clearTimeout(id);
+            if (cleared) {
+                return;
+            }
+        }
+        clearTimeout(id);
+    }
+
+    /**
+     * Clears any active execution timers for this MusicBlocks instance.
+     * @returns {void}
+     */
+    clearExecutionTimers() {
+        if (this._executionTimeout !== null && this._executionTimeout !== undefined) {
+            this._clearExecutionTimeout(this._executionTimeout);
+            this._executionTimeout = null;
+        }
+        if (this._timerManager) {
+            this._timerManager.clearAll();
+        }
+    }
+
+    /**
+     * Returns a promise to run a particular instruction.
+     *
+     * @param {String} command - instruction method name
+     * @param {[*]} args - arguments to the method
+     * @returns {Promise}
+     */
+    runCommand(command, args) {
+        return new Promise(resolve => {
+            let returnVal;
+
+            if (command === "_anonymous") {
+                if (args !== undefined) args();
+            } else {
+                let cname = null;
+                for (const className in MusicBlocks._methodList) {
+                    if (MusicBlocks._methodList[className].indexOf(command) !== -1) {
+                        cname = className;
+                        break;
+                    }
+                }
+                if (!cname) {
+                    throw new Error(`Command "${command}" not found in any class`);
+                }
+
+                const classRef = cname === "Painter" ? this.turtle.painter : resolvePath(cname);
+
+                if (!classRef) {
+                    throw new Error(
+                        `Class "${cname}" could not be resolved for command "${command}"`
+                    );
+                }
+
+                if (typeof classRef[command] !== "function") {
+                    throw new Error(`Command "${command}" not found on class "${cname}"`);
+                }
+
+                returnVal =
+                    args === undefined || (Array.isArray(args) && args.length === 0)
+                        ? classRef[command]()
+                        : classRef[command](...args);
+            }
+
+            const delay = this.turtle.waitTime;
+            this.turtle.doWait(0);
+            this._executionTimeout = this._setExecutionTimeout(() => {
+                this._executionTimeout = null;
+                resolve(returnVal);
+            }, delay);
+        });
+    }
+
+    /**
+     * Returns a Promise for ending each flow.
+     * @returns {Promise}
+     */
+    get ENDFLOW() {
+        return new Promise(resolve => resolve());
+    }
+
+    /**
+     * Returns a Promise for ending an action that ended with a Stop block. The caller
+     * reads the "STOPFLOW" value and stops like a Stop block at the call would.
+     * @returns {Promise}
+     */
+    get STOPFLOW() {
+        return new Promise(resolve => resolve("STOPFLOW"));
+    }
+
+    /**
+     * Returns a Promise for ending a clamp block command.
+     * Executes the listener created at the initiation of the corresponding command.
+     * @returns {Promise}
+     */
+    get ENDFLOWCOMMAND() {
+        return new Promise(resolve => {
+            const signal = this.listeners.pop();
+            if (signal !== null && signal !== undefined) {
+                globalActivity.stage.dispatchEvent(signal);
+            }
+
+            const delay = this.turtle.waitTime;
+            this.turtle.doWait(0);
+            this._executionTimeout = this._setExecutionTimeout(() => {
+                this._executionTimeout = null;
+                resolve();
+            }, delay);
+        });
+    }
+
+    /**
+     * Returns a Promise for ending a mouse flow.
+     * @returns {Promise}
+     */
+    get ENDMOUSE() {
+        return new Promise(resolve => {
+            this.clearExecutionTimers();
+            Mouse.MouseList.splice(Mouse.MouseList.indexOf(this.mouse), 1);
+            if (Mouse.MouseList.length === 0) MusicBlocks.init(false);
+
+            resolve();
+        });
+    }
+
+    // ========= Special Instructions ==============================================================
+
+    print(message) {
+        JSEditor.logConsole(
+            `Mouse "${this.turtle.name}" (${globalActivity.turtles.getIndexOfTurtle(
+                this.turtle
+            )}): ${message}`
+        );
+        if (message === undefined) {
+            globalActivity.textMsg("undefined");
+        } else if (message === null) {
+            globalActivity.textMsg("null");
+        } else {
+            globalActivity.textMsg(message.toString());
+        }
+    }
+
+    // ============================== BOXES ==================================
+
+    getBox(name) {
+        if (name in globalActivity.logo.boxes) {
+            return globalActivity.logo.boxes[name];
+        }
+        JSEditor.logConsole(`No box named "${name}"`, "maroon");
+        return 0;
+    }
+
+    setBox(name, value) {
+        globalActivity.logo.boxes[name] = value;
+    }
+
+    incrementBox(name, delta) {
+        const current = name in globalActivity.logo.boxes ? globalActivity.logo.boxes[name] : 0;
+        globalActivity.logo.boxes[name] = current + delta;
+    }
+
+    _ensureHeap() {
+        if (!globalActivity.logo.turtleHeaps) {
+            globalActivity.logo.turtleHeaps = {};
+        }
+        if (!(this.turIndex in globalActivity.logo.turtleHeaps)) {
+            globalActivity.logo.turtleHeaps[this.turIndex] = [];
+        }
+        return globalActivity.logo.turtleHeaps[this.turIndex];
+    }
+
+    // ========= Getters/Setters ===================================================================
+
+    // ============================== GRAPHICS ================================
+
+    get X() {
+        return globalActivity.turtles.screenX2turtleX(this.turtle.container.x);
+    }
+
+    get Y() {
+        return globalActivity.turtles.screenY2turtleY(this.turtle.container.y);
+    }
+
+    get HEADING() {
+        return this.turtle.orientation;
+    }
+
+    get BOTTOMPOS() {
+        const canvas = globalActivity.turtles._canvas;
+        const scale = globalActivity.turtles.scale;
+        if (!canvas || !canvas.height || !scale) {
+            return 0;
+        }
+        return -1 * (canvas.height / (2.0 * scale));
+    }
+
+    get CAMERA() {
+        return CAMERAVALUE;
+    }
+
+    // =============================== HEAP ===================================
+
+    get HEAP() {
+        return JSON.stringify(this._ensureHeap());
+    }
+
+    get HEAPLENGTH() {
+        return this._ensureHeap().length;
+    }
+
+    get HEAPEMPTY() {
+        return this._ensureHeap().length === 0;
+    }
+
+    emptyHeap() {
+        this._ensureHeap();
+        globalActivity.logo.turtleHeaps[this.turIndex] = [];
+    }
+
+    reverseHeap() {
+        const heap = this._ensureHeap();
+        globalActivity.logo.turtleHeaps[this.turIndex] = heap.reverse();
+    }
+
+    setHeapEntry(index, value) {
+        if (index === null || index === undefined || value === null || value === undefined) {
+            JSEditor.logConsole("Missing heap index or value.", "maroon");
+            return;
+        }
+
+        if (typeof index !== "number") {
+            JSEditor.logConsole("Heap index must be a number.", "maroon");
+            return;
+        }
+
+        let idx = Math.floor(index);
+        if (idx < 1) {
+            JSEditor.logConsole("Index must be > 0.", "maroon");
+            idx = 1;
+        }
+
+        if (idx > 1000) {
+            JSEditor.logConsole("Maximum heap size is 1000.", "maroon");
+            idx = 1000;
+        }
+
+        const heap = this._ensureHeap();
+        while (heap.length < idx) {
+            heap.push(0);
+        }
+        heap[idx - 1] = value;
+    }
+
+    setHeap(index, value) {
+        this.setHeapEntry(index, value);
+    }
+
+    push(value) {
+        if (value === null || value === undefined) {
+            JSEditor.logConsole("Missing heap value.", "maroon");
+            return;
+        }
+        const heap = this._ensureHeap();
+        heap.push(value);
+    }
+
+    // ================================ PEN ===================================
+
+    get PENSIZE() {
+        return this.turtle.painter.stroke;
+    }
+
+    get COLOR() {
+        return this.turtle.painter.color;
+    }
+
+    get SHADE() {
+        return this.turtle.painter.value;
+    }
+
+    get GREY() {
+        return this.turtle.painter.chroma;
+    }
+
+    // ============================== RHYTHM ==================================
+
+    get NOTEVALUE() {
+        return Singer.RhythmActions.getNoteValue(this.turIndex);
+    }
+
+    // ============================== METER ===================================
+
+    set PICKUP(value) {
+        const args = JSInterface.validateArgs("PICKUP", [value]);
+        const validatedValue = Math.max(0, args[0]);
+        Singer.MeterActions.setPickup(validatedValue, this.turIndex);
+    }
+
+    get WHOLENOTESPLAYED() {
+        return Singer.MeterActions.getWholeNotesPlayed(this.turIndex);
+    }
+
+    get BEATCOUNT() {
+        return Singer.MeterActions.getBeatCount(this.turIndex);
+    }
+
+    get MEASURECOUNT() {
+        return Singer.MeterActions.getMeasureCount(this.turIndex);
+    }
+
+    get BPM() {
+        return Singer.MeterActions.getBPM(this.turIndex);
+    }
+
+    get BEATFACTOR() {
+        return Singer.MeterActions.getBeatFactor(this.turIndex);
+    }
+
+    get CURRENTMETER() {
+        return Singer.MeterActions.getCurrentMeter(this.turIndex);
+    }
+
+    // ============================== PITCH ===================================
+
+    get SCALARCHANGEINPITCH() {
+        return Singer.PitchActions.deltaPitch("deltapitch2", this.turIndex);
+    }
+
+    get CHANGEINPITCH() {
+        return Singer.PitchActions.deltaPitch("deltapitch", this.turIndex);
+    }
+
+    get SCALARSTEPUP() {
+        return Singer.PitchActions.consonantStepSize("up", this.turIndex);
+    }
+
+    get SCALARSTEPDOWN() {
+        return Singer.PitchActions.consonantStepSize("down", this.turIndex);
+    }
+
+    // ============================ INTERVALS =================================
+
+    set MOVABLEDO(movable) {
+        const args = JSInterface.validateArgs("MOVABLEDO", [movable]);
+        Singer.IntervalsActions.setMovableDo(args[0], this.turIndex);
+    }
+
+    get CURRENTKEY() {
+        return Singer.IntervalsActions.getCurrentKey(this.turIndex);
+    }
+
+    get CURRENTMODE() {
+        return Singer.IntervalsActions.getCurrentMode(this.turIndex);
+    }
+
+    get MODELENGTH() {
+        return Singer.IntervalsActions.getModeLength(this.turIndex);
+    }
+
+    // ============================== VOLUME ==================================
+
+    set PANNING(value) {
+        const args = JSInterface.validateArgs("PANNING", [value]);
+        Singer.VolumeActions.setPanning(args[0], this.turIndex);
+    }
+
+    set MASTERVOLUME(volume) {
+        const args = JSInterface.validateArgs("MASTERVOLUME", [volume]);
+        Singer.VolumeActions.setMasterVolume(args[0], this.turIndex);
+    }
+
+    get MASTERVOLUME() {
+        return Singer.VolumeActions.masterVolume;
+    }
+}
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { Mouse, MusicBlocks };
+}
+
+if (typeof window !== "undefined") {
+    window.Mouse = Mouse;
+    window.MusicBlocks = MusicBlocks;
+}

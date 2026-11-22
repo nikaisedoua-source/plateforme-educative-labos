@@ -1,0 +1,1677 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Music Blocks</title>
+
+        <meta
+            name="description"
+            content="Learn to code through music with Music Blocks. Arrange colorful blocks to create everything from simple melodies to interactive games."
+        />
+        <!-- Open Graph / WhatsApp / Instagram / LinkedIn / Facebook -->
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="Music Blocks" />
+        <meta property="og:locale" content="en_US" />
+        <meta property="og:title" content="Music Blocks — Learn Coding Through Music" />
+        <meta
+            property="og:description"
+            content="Learn to code through music with Music Blocks. Arrange colorful blocks to create everything from simple melodies to interactive games."
+        />
+        <meta
+            property="og:image"
+            content="https://musicblocks.sugarlabs.org/images/og-preview.png"
+        />
+        <meta
+            property="og:image:secure_url"
+            content="https://musicblocks.sugarlabs.org/images/og-preview.png"
+        />
+        <meta property="og:image:type" content="image/png" />
+        <meta property="og:image:width" content="1536" />
+        <meta property="og:image:height" content="1024" />
+        <meta
+            property="og:image:alt"
+            content="Music Blocks - A musical microworld: visual programming interface with musical code blocks"
+        />
+
+        <!-- Twitter / X Cards -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:site" content="@sugar_labs" />
+        <meta name="twitter:title" content="Music Blocks — Learn Coding Through Music" />
+        <meta
+            name="twitter:description"
+            content="Learn to code through music with Music Blocks. Arrange colorful blocks to create everything from simple melodies to interactive games."
+        />
+        <meta
+            name="twitter:image"
+            content="https://musicblocks.sugarlabs.org/images/og-preview.png"
+        />
+        <meta
+            name="twitter:image:alt"
+            content="Music Blocks - A musical microworld: visual programming interface with musical code blocks"
+        />
+
+        <!-- Schema.org JSON-LD (Search Engines & Knowledge Graphs) -->
+        <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "WebApplication",
+                "name": "Music Blocks",
+                "url": "https://musicblocks.sugarlabs.org/",
+                "description": "Learn to code through music with Music Blocks. Arrange colorful blocks to create everything from simple melodies to interactive games.",
+                "applicationCategory": "EducationalApplication",
+                "operatingSystem": "All",
+                "browserRequirements": "Requires JavaScript. Requires HTML5.",
+                "image": "https://musicblocks.sugarlabs.org/images/og-preview.png",
+                "author": {
+                    "@type": "Organization",
+                    "name": "Sugar Labs",
+                    "url": "https://www.sugarlabs.org/"
+                }
+            }
+        </script>
+
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta id="theme-color" name="theme-color" content="#2196F3" />
+
+        <!-- Icons & PWA -->
+        <link rel="icon" sizes="192x192" href="favicon.ico" />
+        <link rel="apple-touch-icon" href="/activity/activity-icon-color-512.png" />
+        <link rel="manifest" href="android_chrome_manifest.json" />
+
+        <!-- Stylesheets -->
+        <link rel="stylesheet" href="css/tokens.css?v=fixed" />
+        <link rel="stylesheet" href="css/themes.css?v=fixed" />
+        <link
+            rel="preload"
+            href="fonts/material-icons.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <!-- NOTE: The exact query-string URL here must be listed in sw.js `precacheFiles`.
+         If you change `?v=fixed` (or remove/add a query param), update sw.js so offline still works. -->
+        <link
+            rel="preload"
+            href="css/activities.css?v=fixed"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <link
+            rel="preload"
+            href="dist/css/style.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <link
+            rel="preload"
+            href="dist/css/keyboard.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <link
+            rel="preload"
+            href="dist/css/windows.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <link
+            rel="preload"
+            href="lib/materialize-iso.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <link
+            rel="preload"
+            href="css/darkmode.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <link
+            rel="preload"
+            href="css/svgAssetSelector.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <link rel="prefetch" as="video" href="loading-animation.webm" type="video/webm" />
+        <link rel="prefetch" as="video" href="loading-animation.mp4" type="video/mp4" />
+
+        <!-- <script src="js/utils/detectIE.js"></script> -->
+
+        <!-- <script src="sounds/samples/manifest.js"></script> -->
+
+        <!-- Release config: resolves Turtle/Music mode from URL/hostname and seeds
+     window._THIS_IS_*_ globals. Must load first, synchronously, before
+     loader.js and activity.js read those globals. -->
+        <script src="js/releaseconfig.js"></script>
+
+        <script src="dist/vendor.min.js"></script>
+        <link
+            rel="preload"
+            href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css"
+            as="style"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <noscript
+            ><link
+                rel="stylesheet"
+                href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css"
+        /></noscript>
+        <script src="js/utils/jquery-setup.js" defer></script>
+        <script src="js/utils/abcLoader.js" defer></script>
+        <script src="lib/midi.js" defer></script>
+        <!-- raphael and wheelnav are loaded from loader.js once the app is up,
+             not here. They are only used to draw the pie menus, which need a
+             block interaction to exist, and as defer scripts they had to run
+             before DOMContentLoaded and so before anything could be painted. -->
+        <script src="lib/codejar/codejar.min.js" defer></script>
+        <script src="lib/codejar/highlight.pack.js" defer></script>
+        <link
+            rel="preload"
+            href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css"
+            as="style"
+            integrity="sha384-oaMLBGEzBOJx3UHwac0cVndtX5fxGQIfnAeFZ35RTgqPcYlbprH9o9PUV/F8Le07"
+            crossorigin="anonymous"
+            onload="
+                this.onload = null;
+                this.rel = 'stylesheet';
+            "
+        />
+        <noscript
+            ><link
+                rel="stylesheet"
+                href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css"
+                integrity="sha384-oaMLBGEzBOJx3UHwac0cVndtX5fxGQIfnAeFZ35RTgqPcYlbprH9o9PUV/F8Le07"
+                crossorigin="anonymous"
+        /></noscript>
+
+        <!-- libgif.js (SuperGif) provides low-level GIF frame extraction.
+             Browsers expose only the first frame of a GIF; SuperGif lets us
+             step through frames so animated GIFs can be drawn onto our canvas. -->
+        <script src="lib/libgif.js" defer></script>
+
+        <!-- gif-animator.js integrates SuperGif with Music Blocks. It manages
+     decoding and drawing GIF frames onto the turtle's overlay canvas.
+     Canvas refreshing is handled separately by CreateJS Ticker. -->
+        <script src="js/gif-animator.js" defer></script>
+        <script defer>
+            document.addEventListener("DOMContentLoaded", function () {
+                if (window.hljs) hljs.highlightAll();
+            });
+        </script>
+        <script src="lib/astring.min.js" defer></script>
+        <script src="lib/purify.min.js" defer></script>
+        <script src="js/utils/sessionManager.js" defer></script>
+        <script src="js/utils/mb-dialog.js" defer></script>
+        <script src="js/gitDropdown.js" defer></script>
+        <script src="js/gitTutorial.js" defer></script>
+        <script src="js/svgAssetSelector.js" defer></script>
+        <script src="lib/acorn.min.js" defer></script>
+        <script src="env.js" defer></script>
+        <script src="js/utils/language-utils.js" defer></script>
+        <link rel="stylesheet" href="js/practiceLessons/practice.css" />
+        <script src="js/practiceLessons/practiceProblems.js" defer></script>
+        <script src="js/practiceLessons/practiceManager.js" defer></script>
+        <script src="js/practiceLessons/practiceValidator.js" defer></script>
+        <script src="js/practiceLessons/practiceUI.js" defer></script>
+        <script src="js/practiceLessons/practiceEntry.js" defer></script>
+
+        <script data-main="js/loader" src="lib/require.js" defer></script>
+        <link
+            rel="preload"
+            href="fonts/material-icons.woff2"
+            as="font"
+            type="font/woff2"
+            crossorigin="anonymous"
+        />
+        <script src="js/js-export/ast2blocks.config.js"></script>
+        <script>
+            window.ast2blocklist_config_failed = false;
+            window.ast2blocklist_config_ready = window.ast2blocklist_config
+                ? Promise.resolve(window.ast2blocklist_config)
+                : new Promise((resolve, reject) => {
+                      const script = document.createElement("script");
+                      script.src = "js/js-export/ast2blocks.config.js";
+                      script.defer = true;
+                      script.onload = () => resolve(window.ast2blocklist_config);
+                      script.onerror = () => {
+                          window.ast2blocklist_config_failed = true;
+                          reject(new Error("ast2blocks.config.js failed to load"));
+                      };
+                      document.head.appendChild(script);
+                  });
+        </script>
+    </head>
+
+    <body id="body" data-title="index">
+        <!-- Fallback for browsers that don't support preload -->
+        <noscript> JavaScript is required to view this page. </noscript>
+        <header>
+            <div
+                id="loading-image-container"
+                style="
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: calc(var(--vh) * 100);
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    background-color: #ffffff;
+                    z-index: 9999;
+                    contain: paint;
+                "
+            >
+                <div
+                    id="loading-media"
+                    style="width: 100%; padding: 0 20px; box-sizing: border-box"
+                ></div>
+                <div
+                    class="loading-text"
+                    id="loadingText"
+                    style="color: #333; margin-top: 2rem; min-height: 1.5em; font-size: 1.2rem"
+                ></div>
+            </div>
+        </header>
+
+        <main>
+            <!-- #96D3F3-->
+            <div id="chooseKeyDiv" style="display: none" tabindex="-1"></div>
+
+            <div id="movable" tabindex="-1">
+                <p>Solfege Pitch Preview</p>
+                <input class="radioBtn" type="radio" name="movable" value="true" id="movabledo" />
+                <label for="movabledo">Movable Do</label>
+                <input
+                    class="radioBtn"
+                    type="radio"
+                    name="movable"
+                    id="fixed"
+                    checked="checked"
+                    value="false"
+                />
+                <label for="fixed">Fixed</label>
+            </div>
+            <!-- #92B5C8  width = 3790 height = 1743-->
+            <canvas
+                id="canvas"
+                style="background-color: #ffffff; width: 100%; height: 100%"
+            ></canvas>
+
+            <!--hidden at the beginning whilst everything loads-->
+            <div class="popupMsg" id="printText" tabindex="-1" aria-live="polite" role="status">
+                <div class="contentWrapper">
+                    <span id="printTextContent"></span>
+                    <button
+                        class="msgCloseIcon"
+                        onclick="hidePrintText()"
+                        aria-label="Close notification"
+                        tabindex="0"
+                    >
+                        <img src="images/close.svg" alt="" aria-hidden="true" />
+                    </button>
+                </div>
+            </div>
+            <div class="popupMsg" id="errorText" tabindex="-1" aria-live="assertive" role="alert">
+                <div class="contentWrapper">
+                    <span id="errorTextContent"></span>
+                    <button
+                        class="msgCloseIcon"
+                        onclick="hideErrorText()"
+                        aria-label="Close error message"
+                        tabindex="0"
+                    >
+                        <img src="images/close.svg" alt="" aria-hidden="true" />
+                    </button>
+                </div>
+            </div>
+            <div id="hideContents" style="display: none" tabindex="-1">
+                <div class="canvasHolder" id="canvasHolder">
+                    <div
+                        id="clear-modal-container"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Clear workspace confirmation"
+                        style="
+                            display: none;
+                            z-index: 999;
+                            position: fixed;
+                            top: 0;
+                            left: 0;
+                            width: 100%;
+                            height: 100%;
+                            background-color: rgba(0, 0, 0, 0.4);
+                            align-items: center;
+                            justify-content: center;
+                        "
+                    >
+                        <div
+                            id="cleardropdown"
+                            style="
+                                background-color: white;
+                                padding: 24px;
+                                border-radius: 8px;
+                                width: 400px;
+                                box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+                            "
+                        ></div>
+                    </div>
+
+                    <div id="canvasContainer">
+                        <canvas id="myCanvas" width="1200" height="900"></canvas>
+                        <div
+                            id="accessibleBlocks"
+                            class="visually-hidden"
+                            role="region"
+                            aria-label="Workspace Blocks"
+                        ></div>
+                    </div>
+                    <!--Load Animation Container-->
+                    <div style="text-align: center">
+                        <div id="load-container">
+                            <div id="load-content">
+                                <p id="messageText"></p>
+                                <img
+                                    id="loading-image"
+                                    src="images/loading.gif"
+                                    alt="Loading..."
+                                    loading="lazy"
+                                    >
+                            </div>
+                        </div>
+                    </div>
+
+                    <canvas
+                        id="overlayCanvas"
+                        width="1200"
+                        height="900"
+                        style="
+                            position: absolute;
+                            pointer-events: none;
+                            left: 0;
+                            top: 0;
+                            z-index: -100;
+                            visibility: hidden;
+                        "
+                    ></canvas>
+                    <canvas id="myChart" width="600" height="600" tabindex="-1"></canvas>
+                    <video id="camVideo" style="visibility: hidden" tabindex="-1"></video>
+                    <canvas id="camCanvas" style="visibility: hidden" tabindex="-1"></canvas>
+
+                    <div id="languageDiv" tabindex="-1"></div>
+                    <div id="labelDiv" tabindex="-1"></div>
+                    <div id="textLabel" tabindex="-1"></div>
+
+                    <div id="ioDiv" style="display: none" tabindex="-1">
+                        <input
+                            class="file"
+                            type="file"
+                            id="myMedia"
+                            accept="image/*"
+                            tabindex="-1"
+                        />
+                        <input
+                            class="file"
+                            type="file"
+                            id="myOpenFile"
+                            accept=".ta, .tb, .html,.mid,.midi,.abc,.xml,.musicxml,.mxl"
+                            tabindex="-1"
+                        />
+                        <input
+                            class="file"
+                            type="file"
+                            id="myOpenPlugin"
+                            accept=".json"
+                            tabindex="-1"
+                        />
+                        <input
+                            class="file"
+                            type="file"
+                            id="audioInput"
+                            accept=".mp3, .wav"
+                            tabindex="-1"
+                        />
+                        <input class="file" type="file" id="myOpenAll" tabindex="-1" />
+                        <input
+                            class="file"
+                            type="file"
+                            id="myModeSclFile"
+                            accept=".scl,.json"
+                            tabindex="-1"
+                        />
+                    </div>
+                </div>
+                <!-- canvasHolder -->
+                <footer>
+                    <div id="audio" tabindex="-1"></div>
+
+                    <div id="tourData" tabindex="-1"></div>
+
+                    <div id="popdown-palette" tabindex="-1"></div>
+
+                    <div id="loader"></div>
+
+                    <iframe
+                        src="about:blank"
+                        id="planet-iframe"
+                        title="Music Blocks Planet — save, load, and share projects"
+                        style="display: none"
+                    ></iframe>
+
+                    <div id="floatingWindows"></div>
+
+                    <div id="helpElem" tabindex="-1"></div>
+
+                    <div
+                        id="wheelDiv"
+                        class="wheelNav"
+                        style="
+                            display: none;
+                            background-size: contain;
+                            background-image: url(./images/gray.svg);
+                        "
+                        tabindex="-1"
+                    ></div>
+
+                    <div
+                        id="wheelDiv2"
+                        class="wheelNav"
+                        style="
+                            display: none;
+                            background-size: contain;
+                            background-image: url(./images/gray.svg);
+                            visibility: hidden;
+                        "
+                        tabindex="-1"
+                    ></div>
+
+                    <div id="meterWheelDiv" class="wheelNav" tabindex="-1"></div>
+
+                    <div id="contextWheelDiv" class="wheelNav" tabindex="-1"></div>
+
+                    <div
+                        id="helpfulWheelDiv"
+                        class="wheelNav"
+                        style="display: none"
+                        tabindex="-1"
+                    ></div>
+
+                    <div id="submenuWheelDiv" class="wheelNav" tabindex="-1"></div>
+
+                    <div
+                        id="wheelDivptm"
+                        class="wheelNav"
+                        style="
+                            background-size: contain;
+                            background-image: url(./images/gray.svg);
+                            display: none;
+                            left: 400px;
+                            top: 400px;
+                        "
+                        tabindex="-1"
+                    ></div>
+
+                    <div id="pastecode" tabindex="-1">
+                        <input
+                            type="text"
+                            name="paste"
+                            id="paste"
+                            class="ui-autocomplete"
+                            placeholder="Paste Music Blocks code here"
+                            style="visibility: hidden"
+                            tabindex="-1"
+                        />
+                        <ul class="matches"></ul>
+                    </div>
+
+                    <div id="myProgress" tabindex="-1">
+                        <div id="myBar" tabindex="-1"></div>
+                    </div>
+                </footer>
+
+                <dialog
+                    id="lilypondModal"
+                    class="modal"
+                    tabindex="-1"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Save LilyPond score"
+                >
+                    <!-- Modal content for Lilypond save dialog -->
+                    <div class="modal-content" tabindex="-1">
+                        <span class="close">&times;</span>
+                        <div id="fileNameText"></div>
+                        <input type="text" id="fileName" tabindex="-1" />
+                        <p></p>
+                        <div id="titleText"></div>
+                        <input type="text" id="title" tabindex="-1" />
+                        <p></p>
+                        <div id="authorText"></div>
+                        <input type="text" id="author" tabindex="-1" />
+                        <p></p>
+                        <div id="MIDIText"></div>
+                        <input type="checkbox" id="MIDICheck" tabindex="-1" />
+                        <p></p>
+                        <div id="guitarText"></div>
+                        <input type="checkbox" id="guitarCheck" tabindex="-1" />
+                        <p></p>
+                        <p><button class="confirm-button" id="submitLilypond"></button></p>
+                        <!-- <button id="submitPDF"></button></p> -->
+                    </div>
+                </dialog>
+                <div class="materialize-iso" tabindex="-1">
+                    <nav id="toolbars" class="nav-wrapper">
+                        <div class="blue nav-wrapper main-nav-container" tabindex="-1">
+                            <!-- Left Zone: Logo & Playback Controls -->
+                            <div class="toolbar-section left-section">
+                                <div
+                                    id="mb-logo"
+                                    class="logo tooltipped"
+                                    style="
+                                        display: flex;
+                                        align-items: center;
+                                        line-height: 0;
+                                        height: 100%;
+                                        padding-right: 0;
+                                    "
+                                    data-position="bottom"
+                                >
+                                    <img
+                                        alt="MusicBlocks Logo"
+                                        width="100%"
+                                        src="images/logo.svg"
+                                        loading="lazy"
+                                    >
+                                </div>
+                                <ul class="main left toolbar-pill-group playback-group">
+                                    <li>
+                                        <a id="play" class="tooltipped" role="button" tabindex="0"
+                                            ><i class="material-icons main"
+                                                >play_circle_filled</i
+                                            ></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a id="stop" class="tooltipped" role="button" tabindex="0"
+                                            ><i class="material-icons main">stop</i></a
+                                        >
+                                    </li>
+                                    <li
+                                        class="record-btn-group"
+                                        style="display: flex; align-items: center"
+                                    >
+                                        <a
+                                            id="record"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            data-tooltip="Record"
+                                            role="button"
+                                            tabindex="0"
+                                            aria-label="Record"
+                                            ><i class="material-icons main ring" aria-hidden="true"
+                                                >radio_button_unchecked</i
+                                            ><i class="material-icons main dot" aria-hidden="true"
+                                                >fiber_manual_record</i
+                                            ></a
+                                        >
+                                        <a
+                                            id="recordDropdownArrow"
+                                            class="dropdown-trigger"
+                                            data-activates="recorddropdown"
+                                            style="margin-left: -5px; padding: 0; font-size: 28px"
+                                            role="button"
+                                            tabindex="0"
+                                        ></a>
+                                    </li>
+                                </ul>
+                            </div>
+
+                            <!-- Center Zone: Context & Workspace Balance -->
+                            <div class="toolbar-section center-section"></div>
+
+                            <!-- Right Zone: File Operations & Utilities -->
+                            <div class="toolbar-section right-section">
+                                <ul class="main right toolbar-pill-group file-group">
+                                    <li>
+                                        <a
+                                            id="gitProjectBtn"
+                                            class="tooltipped dropdown-trigger"
+                                            data-position="bottom"
+                                            data-tooltip="My Project"
+                                            data-activates="gitdropdown"
+                                            role="button"
+                                            tabindex="0"
+                                            aria-label="My Project"
+                                        >
+                                            <svg
+                                                xmlns="http://www.w3.org/2000/svg"
+                                                viewBox="0 0 256 256"
+                                                style="
+                                                    width: 28px;
+                                                    height: 28px;
+                                                    margin: 0;
+                                                    vertical-align: middle;
+                                                "
+                                            >
+                                                <rect width="256" height="256" fill="none" />
+                                                <path
+                                                    d="M64,88v24a16,16,0,0,0,16,16h96a16,16,0,0,0,16-16V88"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    stroke-width="24"
+                                                />
+                                                <line
+                                                    x1="128"
+                                                    y1="128"
+                                                    x2="128"
+                                                    y2="168"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    stroke-width="24"
+                                                />
+                                                <circle
+                                                    cx="64"
+                                                    cy="64"
+                                                    r="24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    stroke-width="24"
+                                                />
+                                                <circle
+                                                    cx="128"
+                                                    cy="192"
+                                                    r="24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    stroke-width="24"
+                                                />
+                                                <circle
+                                                    cx="192"
+                                                    cy="64"
+                                                    r="24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    stroke-width="24"
+                                                />
+                                            </svg>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="newFile"
+                                            class="tooltipped dropdown-trigger"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            data-activates="newdropdown"
+                                        >
+                                            <i class="material-icons md-48">note_add</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="load"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                        >
+                                            <i class="material-icons md-48">folder</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="saveButton"
+                                            class="tooltipped dropdown-trigger"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            data-activates="saveddropdownbeg"
+                                        >
+                                            <i id="save1" class="material-icons md-48">save_alt</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="saveButtonAdvanced"
+                                            style="display: none"
+                                            class="tooltipped dropdown-trigger"
+                                            role="button"
+                                            tabindex="0"
+                                            data-position="bottom"
+                                            data-activates="saveddropdown"
+                                        >
+                                            <i id="save2" class="material-icons md-48">save_alt</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="planetIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                        >
+                                            <i class="material-icons md-48">public</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            style="display: none"
+                                            id="planetIconDisabled"
+                                            class="tooltipped"
+                                            role="button"
+                                            tabindex="0"
+                                            data-position="bottom"
+                                        >
+                                            <i style="color: #a5acba" class="material-icons md-48"
+                                                >public</i
+                                            >
+                                        </a>
+                                    </li>
+                                </ul>
+
+                                <ul class="main right toolbar-pill-group utility-group">
+                                    <li>
+                                        <a
+                                            id="FullScreen"
+                                            class="FullScreen tooltipped dropdown-trigger"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            onclick="setIcon()"
+                                        >
+                                            <i class="material-icons" id="FullScrIcon"
+                                                >fullscreen</i
+                                            >
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="helpIcon"
+                                            class="tooltipped dropdown-trigger"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            data-activates="helpdropdown"
+                                        >
+                                            <i class="material-icons md-48">help</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="installButton"
+                                            class="tooltipped hidden"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            data-tooltip="Install App"
+                                            aria-label="Install App"
+                                        >
+                                            <i class="material-icons md-48">file_download</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="toggleAuxBtn"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                        >
+                                            <i id="menu" class="animated-icon material-icons md-48"
+                                                >menu</i
+                                            >
+                                        </a>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div
+                            class="nav-wrapper"
+                            id="aux-toolbar"
+                            style="display: none"
+                            tabindex="-1"
+                        >
+                            <div class="blue darken-1 nav-wrapper aux-nav-container" tabindex="-1">
+                                <!-- Aux Group 1: Playback -->
+                                <ul class="aux left aux-group playback-group">
+                                    <li>
+                                        <a
+                                            id="runSlowlyIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            data-delay="10"
+                                            role="button"
+                                            tabindex="0"
+                                        >
+                                            <i class="material-icons md-48">play_circle_outline</i>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="runStepByStepIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            data-delay="10"
+                                            role="button"
+                                            tabindex="0"
+                                        >
+                                            <i class="material-icons md-48">video_library</i>
+                                        </a>
+                                    </li>
+                                </ul>
+
+                                <!-- Aux Group 2: Inspection -->
+                                <ul class="aux right aux-group inspection-group">
+                                    <li>
+                                        <a
+                                            id="displayStatsIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            data-delay="10"
+                                            ><i class="material-icons md-48">poll</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="toggleJavaScriptIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i class="material-icons md-48">code</i></a
+                                        >
+                                    </li>
+                                </ul>
+
+                                <!-- Aux Group 3: Workspace & Tools -->
+                                <ul class="aux right aux-group workspace-group">
+                                    <li>
+                                        <a
+                                            id="wrapTurtle"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i class="material-icons md-48">wrap_text</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="enableHorizScrollIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i class="material-icons md-48">compare_arrows</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            style="display: none"
+                                            id="disableHorizScrollIcon"
+                                            class="tooltipped"
+                                            role="button"
+                                            tabindex="0"
+                                            data-position="bottom"
+                                            ><i class="material-icons md-48">lock</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="restoreIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            data-tooltip="Restore"
+                                            ><i class="material-icons md-48"
+                                                >restore_from_trash</i
+                                            ></a
+                                        >
+                                        <div id="trashList"></div>
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="chooseKeyIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i class="material-icons md-48">music_note</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="mergeWithCurrentIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i class="material-icons md-48">merge_type</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="loadPluginIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            data-delay="10"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i class="material-icons md-48">add_circle</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="delPluginIcon"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            data-delay="10"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i class="material-icons md-48">remove_circle</i></a
+                                        >
+                                    </li>
+                                </ul>
+
+                                <!-- Aux Group 4: Preferences & Modes -->
+                                <ul class="aux right aux-group preferences-group">
+                                    <li>
+                                        <a
+                                            id="beginnerMode"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i id="begIconText" class="material-icons md-48"
+                                                >star</i
+                                            ></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="advancedMode"
+                                            class="tooltipped"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            ><i id="advIconText" class="material-icons md-48"
+                                                >star_border</i
+                                            ></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="themeSelectIcon"
+                                            class="tooltipped dropdown-trigger"
+                                            data-position="bottom"
+                                            role="button"
+                                            tabindex="0"
+                                            data-activates="themedropdown"
+                                            data-tooltip="Select Theme"
+                                            ><i class="material-icons md-48">brightness_7</i></a
+                                        >
+                                    </li>
+                                    <li>
+                                        <a
+                                            id="languageSelectIcon"
+                                            class="tooltipped dropdown-trigger"
+                                            role="button"
+                                            tabindex="0"
+                                            data-position="bottom"
+                                            data-activates="languagedropdown"
+                                            data-tooltip="Select Language"
+                                            ><i class="material-icons md-48">translate</i></a
+                                        >
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </nav>
+
+                    <ul id="saveddropdownbeg" class="dropdown-content">
+                        <li><a id="save-html-beg" role="button" tabindex="0"></a></li>
+                        <li><a id="save-png-beg" role="button" tabindex="0"></a></li>
+                    </ul>
+
+                    <ul id="saveddropdown" class="dropdown-content">
+                        <li><a id="save-html" role="button" tabindex="0"></a></li>
+                        <li><a id="save-svg" role="button" tabindex="0"></a></li>
+                        <li><a id="save-png" role="button" tabindex="0"></a></li>
+                        <li><a id="save-wav" role="button" tabindex="0"></a></li>
+                        <li><a id="save-midi" role="button" tabindex="0"></a></li>
+                        <li><a id="save-abc" role="button" tabindex="0"> </a></li>
+                        <li><a id="save-ly" role="button" tabindex="0"></a></li>
+                        <li><a id="save-mxml" role="button" tabindex="0"></a></li>
+                        <li><a id="save-blockartwork-svg" role="button" tabindex="0"></a></li>
+                        <li><a id="save-blockartwork-png" role="button" tabindex="0"></a></li>
+                    </ul>
+
+                    <ul id="recorddropdown" class="dropdown-content">
+                        <li>
+                            <a id="record-with-menus" role="button" tabindex="0"
+                                >Record canvas and toolbars</a
+                            >
+                        </li>
+                        <li>
+                            <a id="record-canvas-only" role="button" tabindex="0"
+                                >Record canvas only</a
+                            >
+                        </li>
+                    </ul>
+
+                    <ul id="gitdropdown" class="dropdown-content">
+                        <li id="git-item-create">
+                            <a id="git-create" role="button" tabindex="0">Track my project</a>
+                        </li>
+                        <li id="git-item-commit" style="display: none">
+                            <a id="git-commit" role="button" tabindex="0">Mark this moment</a>
+                        </li>
+                        <li id="git-item-history" style="display: none">
+                            <a id="git-history" role="button" tabindex="0">Time travel</a>
+                        </li>
+                    </ul>
+
+                    <ul id="helpdropdown" class="dropdown-content helpdropdown-menu">
+                        <li><a id="helpGuideItem" role="button" tabindex="0"></a></li>
+                        <li><a id="shortcutsGuideItem" role="button" tabindex="0"></a></li>
+                        <li><a id="practiceLessonsItem" role="button" tabindex="0"></a></li>
+                        <li><a id="explorerJournalItem" role="button" tabindex="0"></a></li>
+                        <li><a id="gitTutorialItem" role="button" tabindex="0">Git Tutorial</a></li>
+                    </ul>
+
+                    <ul id="languagedropdown" class="dropdown-content">
+                        <li><a id="enUS" role="button" tabindex="0"></a></li>
+                        <li><a id="enUK" role="button" tabindex="0"></a></li>
+                        <li><a id="es" role="button" tabindex="0"></a></li>
+                        <li><a id="pt" role="button" tabindex="0"></a></li>
+                        <li><a id="fr" role="button" tabindex="0"></a></li>
+                        <li><a id="it" role="button" tabindex="0"></a></li>
+                        <li><a id="de" role="button" tabindex="0"></a></li>
+                        <li><a id="ja" role="button" tabindex="0"></a></li>
+                        <li><a id="kana" role="button" tabindex="0"></a></li>
+                        <li><a id="ko" role="button" tabindex="0"></a></li>
+                        <li><a id="zhCN" role="button" tabindex="0"></a></li>
+                        <li><a id="th" role="button" tabindex="0"></a></li>
+                        <li><a id="tr" role="button" tabindex="0"></a></li>
+                        <li><a id="az" role="button" tabindex="0"></a></li>
+                        <li><a id="ayc" role="button" tabindex="0"></a></li>
+                        <li><a id="quz" role="button" tabindex="0"></a></li>
+                        <li><a id="gug" role="button" tabindex="0"></a></li>
+                        <li><a id="hi" role="button" tabindex="0"></a></li>
+                        <li><a id="ta" role="button" tabindex="0"></a></li>
+                        <li><a id="te" role="button" tabindex="0"></a></li>
+                        <li><a id="ibo" role="button" tabindex="0"></a></li>
+                        <li><a id="ar" role="button" tabindex="0"></a></li>
+                        <li><a id="bn" role="button" tabindex="0"></a></li>
+                        <li><a id="he" role="button" tabindex="0"></a></li>
+                        <li><a id="ur" role="button" tabindex="0"></a></li>
+                    </ul>
+
+                    <ul style="display: none" id="themedropdown" class="dropdown-content">
+                        <li>
+                            <a
+                                id="light"
+                                class="tooltipped"
+                                data-tooltip="Light Mode"
+                                role="button"
+                                tabindex="0"
+                                ><i class="material-icons">brightness_7</i></a
+                            >
+                        </li>
+                        <li>
+                            <a
+                                id="dark"
+                                class="tooltipped"
+                                data-tooltip="Dark Mode"
+                                role="button"
+                                tabindex="0"
+                                ><i class="material-icons">brightness_4</i></a
+                            >
+                        </li>
+                        <li>
+                            <a
+                                id="highcontrast"
+                                class="tooltipped"
+                                data-tooltip="High Contrast Mode"
+                                role="button"
+                                tabindex="0"
+                                ><i class="material-icons">brightness_6</i></a
+                            >
+                        </li>
+                    </ul>
+
+                    <div id="modal-container" style="display: none; z-index: 999">
+                        <ul id="newdropdown" class="dropdown-content" style="padding: 24px"></ul>
+                    </div>
+                </div>
+            </div>
+
+            <div id="searchBar" tabindex="-1">
+                <input
+                    type="text"
+                    name="search"
+                    id="search"
+                    class="ui-autocomplete"
+                    placeholder="Search for Blocks"
+                    tabindex="-1"
+                />
+                <ul class="matches" id="searchResults"></ul>
+            </div>
+        </main>
+
+        <!-- Initialize Scripts -->
+        <script>
+            let canvas, stage;
+            function init() {
+                // Defensive check: ensure createjs is loaded before using it
+                if (typeof createjs === "undefined") {
+                    // Retry after a short delay if createjs isn't ready yet
+                    setTimeout(init, 50);
+                    return;
+                }
+
+                canvas = document.getElementById("canvas");
+                stage = new createjs.Stage(canvas);
+
+                createjs.Ticker.framerate = 60;
+                // createjs.Ticker.addEventListener("tick", stage); // Managed by Activity class
+            }
+            document.addEventListener("DOMContentLoaded", init);
+        </script>
+
+        <script>
+            // Register service worker only in production (not on localhost).
+            // MB_ENV comes from env.js, which is deferred, so decide once parsing
+            // is done; deferred scripts have all run by DOMContentLoaded.
+            document.addEventListener("DOMContentLoaded", () => {
+                if ("serviceWorker" in navigator) {
+                    const readStorage = key => {
+                        try {
+                            return localStorage.getItem(key);
+                        } catch (e) {
+                            return null;
+                        }
+                    };
+                    // Localhost SW is disabled to avoid caching; set allowLocalPwa to test installs.
+                    const allowLocalPwa = readStorage("allowLocalPwa") === "true";
+
+                    // Detect if running on localhost for development
+                    const runtimeEnv = window.MB_ENV;
+                    const isDevMode = runtimeEnv !== "production";
+
+                    if (!isDevMode || allowLocalPwa) {
+                        // Production: Register service worker for offline mode
+                        if (navigator.serviceWorker.controller) {
+                            console.debug(
+                                "[PWA Builder] Active service worker found, no need to register"
+                            );
+                        } else {
+                            // Register the service worker
+                            navigator.serviceWorker
+                                .register("sw.js")
+                                .then(function (reg) {
+                                    console.debug(
+                                        "[PWA Builder] Service worker registered for scope: " +
+                                            reg.scope
+                                    );
+                                })
+                                .catch(function (err) {
+                                    console.error(
+                                        "[PWA Builder] Service worker registration failed:",
+                                        err
+                                    );
+                                });
+                        }
+                    } else {
+                        // Development: Skip service worker for instant updates
+                        console.log(
+                            "🔥 [DEV MODE] Service worker disabled for instant code updates"
+                        );
+                        console.log(
+                            "Set localStorage.allowLocalPwa = 'true' to enable PWA install testing on localhost."
+                        );
+                    }
+                }
+            });
+        </script>
+        <script>
+            let deferredPrompt;
+
+            window.addEventListener("beforeinstallprompt", event => {
+                event.preventDefault(); // Prevent automatic browser prompt
+                deferredPrompt = event;
+
+                // Show the install button
+                const installButton = document.getElementById("installButton");
+                if (installButton) {
+                    installButton.classList.remove("hidden");
+                }
+            });
+
+            // Handle install button click
+            document.addEventListener("DOMContentLoaded", function () {
+                const installButton = document.getElementById("installButton");
+                if (installButton) {
+                    installButton.addEventListener("click", async function () {
+                        if (deferredPrompt) {
+                            // Show the install prompt
+                            deferredPrompt.prompt();
+
+                            // Wait for user choice
+                            const { outcome } = await deferredPrompt.userChoice;
+                            console.log(`User response to the install prompt: ${outcome}`);
+
+                            // Clear the deferredPrompt
+                            deferredPrompt = null;
+
+                            // Hide the button
+                            installButton.classList.add("hidden");
+                        }
+                    });
+                }
+            });
+        </script>
+
+        <!-- Loading Dialog Script -->
+        <script>
+            document.addEventListener("DOMContentLoaded", function () {
+                const readStorage = key => {
+                    try {
+                        return localStorage.getItem(key);
+                    } catch (e) {
+                        return null;
+                    }
+                };
+                const writeStorage = (key, value) => {
+                    try {
+                        localStorage.setItem(key, value);
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                };
+                let loadL10nSplashScreen = function () {
+                    console.debug("The browser is set to " + navigator.language);
+                    let lang = "fr";
+                    const savedLanguage = readStorage("languagePreference");
+                    if (savedLanguage) {
+                        console.debug("Music Blocks is set to " + savedLanguage);
+                        lang = savedLanguage;
+                    }
+
+                    console.debug("Using " + lang);
+                    if (lang === undefined) {
+                        lang = "enUS";
+                        console.debug("Reverting to " + lang);
+                    }
+
+                    const container = document.getElementById("loading-media");
+                    let content;
+                    if (typeof THIS_IS_TURTLE_BLOCKS !== "undefined" && THIS_IS_TURTLE_BLOCKS) {
+                        const splashSrc =
+                            typeof getSplashScreenSrc === "function"
+                                ? getSplashScreenSrc(true)
+                                : "images/logo.svg";
+                        content = `<img src="${splashSrc}" loading="eager" fetchpriority="high" style="width: 70%; height: 90%; object-fit: contain;" alt="Turtle Blocks animation">`;
+                    } else if (lang.startsWith("ja")) {
+                        content = `<img src="loading-animation-ja.png" loading="eager" fetchpriority="high" style="width: 70%; height: 90%; object-fit: contain;" alt="Loading animation">`;
+                    } else {
+                        content = `<video loop autoplay muted playsinline fetchpriority="high" style="width: 90%; height: 100%; object-fit: contain;">
+                        <source src="loading-animation.webm" type="video/webm">
+                        <source src="loading-animation.mp4" type="video/mp4">
+                       </video>`;
+                    }
+                    container.innerHTML = `<div class="media-wrapper" style="width: 100%; aspect-ratio: 16/9; max-height: 500px; display: flex; justify-content: center; align-items: center;">${content}</div>`;
+                };
+
+                loadL10nSplashScreen();
+
+                requirejs(["utils/utils"], function (_) {
+                    setTimeout(function () {
+                        const loadingText = document.getElementById("loadingText");
+                        const rawTexts =
+                            typeof LOADING_TEXTS !== "undefined" && Array.isArray(LOADING_TEXTS)
+                                ? LOADING_TEXTS
+                                : [
+                                      "Do, Re, Mi, Fa, Sol, La, Ti, Do",
+                                      "Loading Music Blocks...",
+                                      "Reading Music..."
+                                  ];
+                        let index = 0;
+
+                        const getTranslatedText = function (text) {
+                            if (
+                                typeof window !== "undefined" &&
+                                window.i18next &&
+                                window.i18next.isInitialized &&
+                                typeof _ === "function"
+                            ) {
+                                return _(text);
+                            }
+                            return text;
+                        };
+
+                        window.intervalId = setInterval(function () {
+                            loadingText.textContent = getTranslatedText(rawTexts[index]);
+                            index = (index + 1) % rawTexts.length;
+                        }, 1500);
+                    }, 3000);
+                });
+
+                const languageDropdown = document.getElementById("languagedropdown");
+                if (languageDropdown) {
+                    const langLinks = languageDropdown.querySelectorAll("a");
+                    langLinks.forEach(link => {
+                        link.addEventListener("click", function (e) {
+                            e.preventDefault(); // prevent default <a> behavior
+                            const selectedLang = this.id; // ID corresponds to language code
+                            const currentLang = readStorage("languagePreference");
+                            if (
+                                currentLang !== selectedLang &&
+                                writeStorage("languagePreference", selectedLang)
+                            ) {
+                                location.reload(); // automatically reload
+                            }
+                        });
+                    });
+                }
+            });
+        </script>
+
+        <script>
+            (function ($) {
+                $.fn.fixMe = function () {
+                    return this.each(function () {
+                        let $this = $(this),
+                            $t_fixed;
+
+                        function init() {
+                            $this.wrap('<div class="container" />');
+                            $t_fixed = $this.clone();
+                            $t_fixed
+                                .find("tbody")
+                                .remove()
+                                .end()
+                                .addClass("fixed")
+                                .insertBefore($this);
+                            resizeFixed();
+                        }
+
+                        function resizeFixed() {
+                            setTimeout(function () {
+                                $t_fixed.find("th").each(function (index) {
+                                    $(this).css(
+                                        "width",
+                                        $this.find("th").eq(index).outerWidth() + "px"
+                                    );
+                                });
+                            }, 100);
+                        }
+
+                        function scrollFixed() {
+                            let offset = $(this).scrollTop(),
+                                tableOffsetTop = $this.offset().top,
+                                tableOffsetBottom =
+                                    tableOffsetTop + $this.height() - $this.find("thead").height();
+
+                            if (offset < tableOffsetTop || offset > tableOffsetBottom) {
+                                $t_fixed.hide();
+                            } else if (
+                                offset >= tableOffsetTop &&
+                                offset <= tableOffsetBottom &&
+                                $t_fixed.is(":hidden")
+                            ) {
+                                $t_fixed.show();
+                            }
+                        }
+
+                        $(window).resize(resizeFixed);
+                        $(window).scroll(scrollFixed);
+                        init();
+                    });
+                };
+                jQuery;
+
+                $(document).ready(function () {
+                    $("solfa").fixMe();
+                    $(".up").click(function () {
+                        $("html, body").animate(
+                            {
+                                scrollTop: 0
+                            },
+                            2000
+                        );
+                    });
+                });
+            });
+
+            let isDragging = false;
+        </script>
+
+        <script>
+            var elem = document.documentElement;
+
+            function openFullscreen() {
+                if (elem.requestFullscreen) {
+                    elem.requestFullscreen();
+                } else if (elem.webkitRequestFullscreen) {
+                    elem.webkitRequestFullscreen();
+                } else if (elem.msRequestFullscreen) {
+                    elem.msRequestFullscreen();
+                } else if (elem.mozRequestFullscreen) {
+                    elem.mozRequestFullscreen();
+                }
+            }
+
+            function closeFullscreen() {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) {
+                    document.msExitFullscreen();
+                } else if (document.mozExitFullscreen) {
+                    document.mozExitFullscreen();
+                }
+            }
+
+            function setIcon() {
+                var iconCode = document.querySelector("#FullScrIcon");
+                // Determine fullscreen state using the browser fullscreen API
+                // instead of relying on a manual counter. This keeps the icon
+                // in sync when fullscreen is exited via ESC or browser controls.
+                var isFullscreen =
+                    document.fullscreenElement ||
+                    document.webkitFullscreenElement ||
+                    document.mozFullScreenElement ||
+                    document.msFullscreenElement;
+
+                if (!isFullscreen) {
+                    openFullscreen();
+                    iconCode.textContent = "\ue5d1"; // fullscreen_exit icon
+                } else {
+                    closeFullscreen();
+                    iconCode.textContent = "\ue5d0"; // fullscreen icon
+                }
+            }
+
+            function handleFullscreenChange() {
+                var iconCode = document.querySelector("#FullScrIcon");
+                var fullScreenBtn = document.querySelector("#FullScreen");
+                var isFullscreen =
+                    document.fullscreenElement ||
+                    document.webkitFullscreenElement ||
+                    document.mozFullScreenElement ||
+                    document.msFullscreenElement;
+
+                iconCode.textContent = isFullscreen ? "\ue5d1" : "\ue5d0";
+
+                if (fullScreenBtn && typeof _ === "function") {
+                    var tooltipText = isFullscreen ? _("Exit Fullscreen") : _("Enter Fullscreen");
+                    fullScreenBtn.setAttribute("data-tooltip", tooltipText);
+                    if (window.jQuery) {
+                        window.jQuery(fullScreenBtn).tooltip({
+                            html: true,
+                            delay: 100
+                        });
+                    }
+                }
+            }
+
+            document.addEventListener("fullscreenchange", handleFullscreenChange);
+            document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+            document.addEventListener("mozfullscreenchange", handleFullscreenChange);
+            document.addEventListener("MSFullscreenChange", handleFullscreenChange);
+        </script>
+
+        <style>
+            #installButton.hidden {
+                display: none !important;
+            }
+        </style>
+
+        <script src="js/utils/zoomOverlay.js"></script>
+
+        <script>
+            document.addEventListener("DOMContentLoaded", function () {
+                let persistentNotification = null;
+
+                function showPersistentNotification() {
+                    if (!persistentNotification) {
+                        persistentNotification = document.createElement("div");
+                        persistentNotification.id = "persistentNotification";
+                        persistentNotification.textContent =
+                            "Play only mode enabled. For full Music Blocks experience, use a larger display.";
+                        document.body.appendChild(persistentNotification);
+                    }
+                }
+
+                function removePersistentNotification() {
+                    if (persistentNotification) {
+                        persistentNotification.remove();
+                        persistentNotification = null;
+                    }
+                }
+
+                function hideElementById(elementId) {
+                    const elem = document.getElementById(elementId);
+                    if (elem) {
+                        elem.style.display = "none";
+                    }
+                }
+
+                function showElementById(elementId) {
+                    const elem = document.getElementById(elementId);
+                    if (elem) {
+                        elem.style.display = "";
+                    }
+                }
+
+                function togglePlayOnlyMode() {
+                    const isSmallScreen = window.innerWidth < 768 || window.innerHeight < 600;
+                    const body = document.body;
+                    const homeButton = document.getElementById("Home [HOME]");
+                    const buttonContainer = document.getElementById("buttoncontainerBOTTOM");
+
+                    if (isSmallScreen) {
+                        // Enable play-only mode
+                        body.classList.add("play-only");
+                        showPersistentNotification();
+
+                        // Hide certain elements
+                        hideElementById("Show/hide blocks");
+                        hideElementById("Expand/collapse blocks");
+                        hideElementById("Decrease block size");
+                        hideElementById("Increase block size");
+                        hideElementById("grid");
+                        hideElementById("palette");
+                    } else {
+                        // Disable play-only mode
+                        body.classList.remove("play-only");
+                        removePersistentNotification();
+
+                        showElementById("Show/hide blocks");
+                        showElementById("Expand/collapse blocks");
+                        showElementById("Decrease block size");
+                        showElementById("Increase block size");
+                        showElementById("grid");
+                        showElementById("palette");
+                    }
+                }
+
+                togglePlayOnlyMode();
+
+                window.addEventListener("resize", togglePlayOnlyMode);
+            });
+
+            (function () {
+                function setAppHeight() {
+                    const vh = window.innerHeight * 0.01;
+                    document.documentElement.style.setProperty("--vh", `${vh}px`);
+                }
+
+                window.addEventListener("resize", setAppHeight);
+                document.addEventListener("fullscreenchange", setAppHeight);
+                setAppHeight();
+            })();
+
+            (function () {
+                function resizeCanvasesToScreen() {
+                    const canvases = document.querySelectorAll("canvas");
+
+                    canvases.forEach(c => {
+                        c.style.width = "100%";
+                        c.style.height = "100%";
+                    });
+                }
+                window.addEventListener("resize", resizeCanvasesToScreen);
+                document.addEventListener("fullscreenchange", resizeCanvasesToScreen);
+
+                setTimeout(resizeCanvasesToScreen, 150);
+            })();
+        </script>
+    </body>
+</html>
