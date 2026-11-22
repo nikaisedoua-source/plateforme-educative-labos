@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Labos libres</title>
+<style>
+  :root { --fond: #f6f8fb; --carte: #fff; --texte: #1d2433; --doux: #5b6578; --accent: #2f6fde; --bord: #d9dfe8; }
+  @media (prefers-color-scheme: dark) { :root { --fond: #141821; --carte: #1d2330; --texte: #e8ecf3; --doux: #a3adbf; --accent: #6ea0ff; --bord: #313a4c; } }
+  body { margin: 0; padding: 24px 16px; background: var(--fond); color: var(--texte); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; }
+  ul { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  li { background: var(--carte); border: 1px solid var(--bord); border-radius: 12px; padding: 14px; }
+  a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  small { color: var(--doux); display: block; margin-top: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Labos libres de la plateforme éducative</h1>
+  <p>Ces labos s'ouvrent normalement depuis le Labo de la plateforme. Chacun garde sa licence (fichier LICENCE.txt de son dossier).</p>
+  <ul>
+    <li><a href="phet/ohms-law.html">Simulations PhET (ex. loi d'Ohm)</a><small>CC BY 4.0 — université du Colorado Boulder</small></li>
+    <li><a href="circuit/circuitjs.html?lang=fr">Circuits électriques animés</a><small>CircuitJS — GPL-2.0</small></li>
+    <li><a href="optique/simulator/?lang=fr">Optique : tracé des rayons</a><small>Ray Optics — Apache-2.0</small></li>
+    <li><a href="molecules/index.html">Molécules en 3D</a><small>3Dmol.js — BSD-3 ; PubChem</small></li>
+    <li><a href="netlogo/loups-moutons.html">Modèles NetLogo</a><small>GPL-2.0 ; modèles CC BY-NC-SA 3.0</small></li>
+    <li><a href="logique/index.html">Portes logiques</a><small>LogicEmu — MIT</small></li>
+    <li><a href="snap/snap.html">Snap!</a><small>AGPL-3.0</small></li>
+    <li><a href="python/notebooks/index.html?path=Premiers%20pas%20en%20Python.ipynb">Python</a><small>JupyterLite — BSD-3</small></li>
+    <li><a href="blockly/index.html?lang=fr">Jeux Blockly</a><small>Apache-2.0</small></li>
+    <li><a href="musique/index.html">Music Blocks</a><small>AGPL-3.0</small></li>
+  </ul>
+</main>
+</body>
+</html>

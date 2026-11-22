@@ -1,0 +1,7 @@
+{
+  "LiteBuildConfig": {
+    "contents": ["contenu"],
+    "output_dir": "_output",
+    "no_sourcemaps": true
+  }
+}
