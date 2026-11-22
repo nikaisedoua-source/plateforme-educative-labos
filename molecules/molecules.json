@@ -1,0 +1,230 @@
+[
+ {
+  "cid": 962,
+  "nom": "Eau",
+  "formule": "H_2O",
+  "famille": "Chimie minérale"
+ },
+ {
+  "cid": 222,
+  "nom": "Ammoniac",
+  "formule": "NH_3",
+  "famille": "Chimie minérale"
+ },
+ {
+  "cid": 280,
+  "nom": "Dioxyde de carbone",
+  "formule": "CO_2",
+  "famille": "Chimie minérale"
+ },
+ {
+  "cid": 784,
+  "nom": "Peroxyde d'hydrogène (eau oxygénée)",
+  "formule": "H_2O_2",
+  "famille": "Chimie minérale"
+ },
+ {
+  "cid": 24823,
+  "nom": "Ozone",
+  "formule": "O_3",
+  "famille": "Chimie minérale"
+ },
+ {
+  "cid": 1118,
+  "nom": "Acide sulfurique",
+  "formule": "H_2SO_4",
+  "famille": "Chimie minérale"
+ },
+ {
+  "cid": 944,
+  "nom": "Acide nitrique",
+  "formule": "HNO_3",
+  "famille": "Chimie minérale"
+ },
+ {
+  "cid": 297,
+  "nom": "Méthane",
+  "formule": "CH_4",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 6324,
+  "nom": "Éthane",
+  "formule": "C_2H_6",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 6334,
+  "nom": "Propane",
+  "formule": "C_3H_8",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 7843,
+  "nom": "Butane",
+  "formule": "C_4H_{10}",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 6360,
+  "nom": "Méthylpropane (isobutane)",
+  "formule": "C_4H_{10}",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 6325,
+  "nom": "Éthylène (éthène)",
+  "formule": "C_2H_4",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 6326,
+  "nom": "Acétylène (éthyne)",
+  "formule": "C_2H_2",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 8078,
+  "nom": "Cyclohexane",
+  "formule": "C_6H_{12}",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 241,
+  "nom": "Benzène",
+  "formule": "C_6H_6",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 1140,
+  "nom": "Toluène",
+  "formule": "C_7H_8",
+  "famille": "Hydrocarbures"
+ },
+ {
+  "cid": 887,
+  "nom": "Méthanol",
+  "formule": "CH_4O",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 702,
+  "nom": "Éthanol",
+  "formule": "C_2H_6O",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 753,
+  "nom": "Glycérol",
+  "formule": "C_3H_8O_3",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 712,
+  "nom": "Méthanal (formaldéhyde)",
+  "formule": "CH_2O",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 177,
+  "nom": "Éthanal",
+  "formule": "C_2H_4O",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 180,
+  "nom": "Propanone (acétone)",
+  "formule": "C_3H_6O",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 284,
+  "nom": "Acide méthanoïque",
+  "formule": "CH_2O_2",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 176,
+  "nom": "Acide éthanoïque (acide acétique)",
+  "formule": "C_2H_4O_2",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 8857,
+  "nom": "Éthanoate d'éthyle (ester)",
+  "formule": "C_4H_8O_2",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 996,
+  "nom": "Phénol",
+  "formule": "C_6H_6O",
+  "famille": "Composés oxygénés"
+ },
+ {
+  "cid": 6115,
+  "nom": "Aniline",
+  "formule": "C_6H_7N",
+  "famille": "Composés azotés"
+ },
+ {
+  "cid": 1176,
+  "nom": "Urée",
+  "formule": "CH_4N_2O",
+  "famille": "Composés azotés"
+ },
+ {
+  "cid": 750,
+  "nom": "Glycine",
+  "formule": "C_2H_5NO_2",
+  "famille": "Biologie"
+ },
+ {
+  "cid": 5950,
+  "nom": "Alanine",
+  "formule": "C_3H_7NO_2",
+  "famille": "Biologie"
+ },
+ {
+  "cid": 5793,
+  "nom": "Glucose",
+  "formule": "C_6H_{12}O_6",
+  "famille": "Biologie"
+ },
+ {
+  "cid": 5988,
+  "nom": "Saccharose",
+  "formule": "C_{12}H_{22}O_{11}",
+  "famille": "Biologie"
+ },
+ {
+  "cid": 5997,
+  "nom": "Cholestérol",
+  "formule": "C_{27}H_{46}O",
+  "famille": "Biologie"
+ },
+ {
+  "cid": 5957,
+  "nom": "ATP (adénosine triphosphate)",
+  "formule": "C_{10}H_{16}N_5O_{13}P_3",
+  "famille": "Biologie"
+ },
+ {
+  "cid": 2244,
+  "nom": "Aspirine",
+  "formule": "C_9H_8O_4",
+  "famille": "Médicaments"
+ },
+ {
+  "cid": 1983,
+  "nom": "Paracétamol",
+  "formule": "C_8H_9NO_2",
+  "famille": "Médicaments"
+ },
+ {
+  "cid": 2519,
+  "nom": "Caféine",
+  "formule": "C_8H_{10}N_4O_2",
+  "famille": "Médicaments"
+ }
+]

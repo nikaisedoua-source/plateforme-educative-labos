@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Molécules en 3D</title>
+<style>
+  :root { --fond: #f6f8fb; --carte: #fff; --texte: #1d2433; --doux: #5b6578; --accent: #2f6fde; --bord: #d9dfe8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fond: #141821; --carte: #1d2330; --texte: #e8ecf3; --doux: #a3adbf; --accent: #6ea0ff; --bord: #313a4c; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--fond); color: var(--texte);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .page { display: grid; grid-template-columns: 290px 1fr; height: 100%; }
+  aside { border-right: 1px solid var(--bord); background: var(--carte); display: flex; flex-direction: column; min-height: 0; }
+  aside h1 { font-size: 18px; margin: 14px 16px 8px; }
+  #recherche { margin: 0 16px 8px; padding: 8px 10px; border: 1px solid var(--bord); border-radius: 8px;
+    background: var(--fond); color: var(--texte); font: inherit; }
+  #liste { overflow: auto; padding: 0 8px 16px; flex: 1; }
+  #liste h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--doux); margin: 14px 8px 4px; }
+  #liste button { display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left;
+    border: 0; background: none; color: var(--texte); padding: 7px 8px; border-radius: 6px; font: inherit; cursor: pointer; }
+  #liste button:hover { background: var(--fond); }
+  #liste button[aria-current="true"] { background: var(--accent); color: #fff; }
+  #liste .f { color: inherit; opacity: .75; white-space: nowrap; }
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .barre { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 16px; border-bottom: 1px solid var(--bord); background: var(--carte); }
+  .barre h2 { margin: 0; font-size: 18px; }
+  .barre .infos { color: var(--doux); }
+  .styles { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+  .styles button, .styles label { border: 1px solid var(--bord); background: var(--fond); color: var(--texte); border-radius: 8px;
+    padding: 6px 10px; font: inherit; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+  .styles button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  #vue { position: relative; flex: 1; min-height: 320px; }
+  .legende { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 16px; border-top: 1px solid var(--bord); background: var(--carte); color: var(--doux); font-size: 13px; }
+  .legende i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; margin-right: 4px; border: 1px solid #0003; }
+  .aide { color: var(--doux); font-size: 13px; padding: 0 16px 10px; }
+  @media (max-width: 760px) {
+    .page { grid-template-columns: 1fr; grid-template-rows: 42% 58%; }
+    aside { border-right: 0; border-bottom: 1px solid var(--bord); }
+    .styles { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <aside>
+    <h1>Molécules en 3D</h1>
+    <input id="recherche" type="search" placeholder="Chercher (nom ou formule)…" aria-label="Chercher une molécule">
+    <p class="aide">Fais tourner la molécule avec le doigt ou la souris, zoome en pinçant ou avec la molette.</p>
+    <nav id="liste"></nav>
+  </aside>
+  <main>
+    <div class="barre">
+      <h2 id="nom">…</h2>
+      <span class="infos" id="infos"></span>
+      <div class="styles">
+        <button type="button" data-style="boules" aria-pressed="true">Boules et bâtonnets</button>
+        <button type="button" data-style="batons" aria-pressed="false">Bâtonnets</button>
+        <button type="button" data-style="compact" aria-pressed="false">Modèle compact</button>
+        <label><input type="checkbox" id="etiquettes"> Symboles</label>
+      </div>
+    </div>
+    <div id="vue"></div>
+    <div class="legende" id="legende"></div>
+  </main>
+</div>
+<script src="3Dmol-min.js"></script>
+<script>
+// Couleurs CPK (convention des manuels) et masses molaires atomiques (g/mol).
+const ATOMES = {
+  H: ["Hydrogène", "#ffffff", 1.008], C: ["Carbone", "#3d3d3d", 12.011], N: ["Azote", "#3050f8", 14.007],
+  O: ["Oxygène", "#ff0d0d", 15.999], P: ["Phosphore", "#ff8000", 30.974], S: ["Soufre", "#e6c200", 32.06],
+  Cl: ["Chlore", "#1ff01f", 35.45]
+};
+const couleurs = Object.fromEntries(Object.entries(ATOMES).map(([s, a]) => [s, a[1]]));
+let molecules = [], courante = null, style = "boules";
+const vue = $3Dmol.createViewer(document.getElementById("vue"), { backgroundAlpha: 0 });
+
+// Formule « LaTeX » (H_2O, C_{12}H_{22}O_{11}) → HTML avec indices.
+function formule(tex) {
+  return tex.replace(/_\{(\d+)\}|_(\d)/g, (_, a, b) => "<sub>" + (a || b) + "</sub>");
+}
+function texte(tex) { return tex.replace(/[_{}]/g, ""); }
+
+function appliquerStyle() {
+  const s = style === "batons" ? { stick: { radius: 0.18, colorscheme: { prop: "elem", map: couleurs } } }
+    : style === "compact" ? { sphere: { scale: 1.0, colorscheme: { prop: "elem", map: couleurs } } }
+    : { stick: { radius: 0.14, colorscheme: { prop: "elem", map: couleurs } },
+        sphere: { scale: 0.28, colorscheme: { prop: "elem", map: couleurs } } };
+  vue.setStyle({}, s);
+  vue.removeAllLabels();
+  if (document.getElementById("etiquettes").checked) {
+    vue.selectedAtoms({}).forEach(a => vue.addLabel(a.elem, {
+      position: { x: a.x, y: a.y, z: a.z }, fontSize: 12, fontColor: "black", backgroundColor: "white",
+      backgroundOpacity: 0.75, inFront: true, alignment: "center" }));
+  }
+  vue.render();
+}
+
+async function ouvrir(m) {
+  courante = m;
+  document.querySelectorAll("#liste button").forEach(b => b.setAttribute("aria-current", b.dataset.cid == m.cid));
+  document.getElementById("nom").textContent = m.nom;
+  const r = await fetch("data/" + m.cid + ".sdf");
+  const sdf = await r.text();
+  vue.clear();
+  vue.addModel(sdf, "sdf");
+  const atomes = vue.selectedAtoms({});
+  const masse = atomes.reduce((t, a) => t + (ATOMES[a.elem] ? ATOMES[a.elem][2] : 0), 0);
+  document.getElementById("infos").innerHTML = formule(m.formule) + " · " + atomes.length + " atomes · M ≈ "
+    + masse.toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " g/mol";
+  const presents = [...new Set(atomes.map(a => a.elem))];
+  document.getElementById("legende").innerHTML = presents.map(e => ATOMES[e]
+    ? `<span><i style="background:${ATOMES[e][1]}"></i>${e} : ${ATOMES[e][0]}</span>` : `<span>${e}</span>`).join("")
+    + `<span style="margin-left:auto">Structure : PubChem, n° ${m.cid}</span>`;
+  appliquerStyle();
+  vue.zoomTo();
+  vue.render();
+  history.replaceState(null, "", "?m=" + m.cid);
+}
+
+function afficherListe(filtre) {
+  const f = filtre.trim().toLowerCase();
+  const nav = document.getElementById("liste");
+  nav.innerHTML = "";
+  let famille = null;
+  molecules.filter(m => !f || m.nom.toLowerCase().includes(f) || texte(m.formule).toLowerCase().includes(f))
+    .forEach(m => {
+      if (m.famille !== famille) {
+        famille = m.famille;
+        nav.insertAdjacentHTML("beforeend", "<h2>" + famille + "</h2>");
+      }
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.cid = m.cid;
+      b.setAttribute("aria-current", courante && courante.cid === m.cid);
+      b.innerHTML = "<span></span><span class='f'>" + formule(m.formule) + "</span>";
+      b.firstChild.textContent = m.nom;
+      b.onclick = () => ouvrir(m);
+      nav.appendChild(b);
+    });
+}
+
+document.querySelectorAll("[data-style]").forEach(b => b.onclick = () => {
+  style = b.dataset.style;
+  document.querySelectorAll("[data-style]").forEach(x => x.setAttribute("aria-pressed", x === b));
+  appliquerStyle();
+});
+document.getElementById("etiquettes").onchange = appliquerStyle;
+document.getElementById("recherche").oninput = e => afficherListe(e.target.value);
+window.addEventListener("resize", () => { vue.resize(); vue.render(); });
+
+fetch("molecules.json").then(r => r.json()).then(liste => {
+  molecules = liste;
+  afficherListe("");
+  const demandee = Number(new URLSearchParams(location.search).get("m"));
+  ouvrir(molecules.find(m => m.cid === demandee) || molecules[0]);
+});
+</script>
+</body>
+</html>

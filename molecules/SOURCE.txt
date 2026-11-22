@@ -1,0 +1,2 @@
+3Dmol.js 2.5.4 (BSD-3) : https://github.com/3dmol/3Dmol.js
+Structures 3D : PubChem (NIH), domaine public — https://pubchem.ncbi.nlm.nih.gov
